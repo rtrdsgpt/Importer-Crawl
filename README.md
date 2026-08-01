@@ -1,4 +1,4 @@
-# AI-Powered Importer Discovery Engine
+# Importer Crawl
 
 An AI-powered pipeline that discovers and ranks the N most relevant importer
 companies for an Indian exporter entering a foreign market, given a
@@ -68,7 +68,7 @@ Phase 4  app.py (Streamlit)
 
 | File | Phase | Responsibility |
 |---|---|---|
-| `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup, shared OpenAI-compatible provider dispatch (`get_llm_client`) used by localization and directory mining |
+| `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup |
 | `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, Jina Reader fallback for JS-heavy pages, robots.txt enforcement, contact extraction |
 | `src/mine_directories.py` | 2.5 | LLM extraction of company names from directory pages, follow-up search per name |
 | `src/rank_schema.py` | 3 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting — used by every provider |
@@ -92,13 +92,18 @@ the ranking/filtering logic once; `rank_engine.py` picks a `--provider`
 (`hf`, `openai`, `groq`, `gemini`, `claude`) and dispatches to the right
 SDK — an OpenAI-compatible client for OpenAI/Groq/Gemini, `anthropic` for
 Claude, `huggingface_hub` for HF — reusing the same prompt/schema either
-way. This was necessary in practice —
-during development the free Hugging Face tier ran out of credits and its
-7B model confidently misclassified a German tile *manufacturer*
+way. `rank_engine.get_raw_completion()` exposes the same 5-provider dispatch
+as a generic text-completion call, so the auxiliary steps (query
+localization in `discovery.py`, directory-name extraction in
+`mine_directories.py`) support the exact same provider set as ranking —
+one provider choice covers the whole pipeline, not a separate constrained
+list for auxiliary steps. This was necessary in practice — during
+development the free Hugging Face tier ran out of credits and its 7B
+model confidently misclassified a German tile *manufacturer*
 (`agrob-buchtal.de`) as a "buyer" at relevance score 85, which is exactly
 the class of error the ranking stage exists to prevent. Being able to
-switch providers (Groq's Llama-3.3-70B, Gemini, Claude, OpenAI) without
-rewriting the pipeline logic was essential, not a nice-to-have.
+switch providers (Groq's `openai/gpt-oss-120b`, Gemini, Claude, OpenAI)
+without rewriting the pipeline logic was essential, not a nice-to-have.
 
 **Domain classification at discovery time.** Every discovered URL is
 tagged `website` / `directory` / `noise` / `linkedin` based on its domain
@@ -290,9 +295,9 @@ GEMINI_API_KEY=...        # https://aistudio.google.com/apikey (free)
 GROQ_API_KEY=...          # https://console.groq.com/keys (free)
 ```
 
-`GROQ_API_KEY` is also used for the optional localized-query generation
-(Phase 1) and directory mining (Phase 2.5) steps, independent of which
-provider you use for ranking.
+The optional localized-query generation (Phase 1) and directory mining
+(Phase 2.5) steps use whichever provider you pick for ranking — no
+separate key is needed for them.
 
 ---
 
@@ -314,14 +319,14 @@ re-running anything.
 
 ```bash
 # Phase 1: Discovery (add --localize for target-language queries; --localize-provider
-# defaults to groq, also accepts gemini/openai)
+# defaults to groq, also accepts hf/openai/gemini/claude)
 python src/discovery.py --product "Ceramic Tiles" --country "Germany" --localize
 
 # Phase 2: Scraping
 python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
 
 # Phase 2.5 (optional): Directory lead mining -- then re-run Phase 2 to scrape the new leads
-# (--provider defaults to groq, also accepts gemini/openai)
+# (--provider defaults to groq, also accepts hf/openai/gemini/claude)
 python src/mine_directories.py \
     --candidates data/candidates_ceramic_tiles_germany.json \
     --scraped data/scraped_ceramic_tiles_germany.json \
