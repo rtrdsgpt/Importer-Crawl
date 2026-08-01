@@ -21,7 +21,7 @@ contact info) and rank_*.py (to be judged) like any other candidate --
 this stage only expands the candidate pool.
 
 Usage:
-    export GROQ_API_KEY=gsk_...   # or GEMINI_API_KEY / OPENAI_API_KEY with --provider
+    export GROQ_API_KEY=gsk_...   # or any provider rank_engine.py supports, via --provider
     python src/mine_directories.py --candidates data/candidates_ceramic_tiles_germany.json \\
         --scraped data/scraped_ceramic_tiles_germany.json \\
         --product "Ceramic Tiles" --country "Germany" --provider groq
@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 
@@ -73,12 +74,17 @@ no commentary). If no real company names are present, respond with [].
 def extract_company_names(
     directory_pages: list[dict], product: str, country: str,
     provider: str = "groq", model: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> list[str]:
-    client, default_model, env_var = disc.get_llm_client(provider)
-    if client is None:
-        print(f"  ! no {env_var} found; skipping directory mining")
+    import os
+
+    import rank_engine as rnk
+
+    config = rnk.PROVIDER_CONFIGS[provider]
+    api_key = os.environ.get(config["env_var"])
+    if not api_key:
+        print(f"  ! no {config['env_var']} found; skipping directory mining")
         return []
-    model = model or default_model
 
     names: set[str] = set()
     pages = directory_pages[:MAX_DIRECTORY_PAGES]
@@ -86,32 +92,32 @@ def extract_company_names(
         text = (page.get("text_content") or "").strip()
         if len(text) < 100:
             continue
-        print(f"[{i}/{len(pages)}] mining directory page: {page['url']}", flush=True)
+        msg = f"[{i}/{len(pages)}] mining directory page: {page['url']}"
+        print(msg, flush=True)
+        if on_progress:
+            on_progress(msg)
+        content = rnk.get_raw_completion(
+            provider, model, api_key, SYSTEM_PROMPT,
+            USER_PROMPT_TEMPLATE.format(
+                product=product, country=country, text_content=text[:MAX_TEXT_CHARS_IN_PROMPT]),
+            max_tokens=1024, temperature=0.1,
+        )
+        if not content:
+            continue
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": USER_PROMPT_TEMPLATE.format(
-                        product=product, country=country,
-                        text_content=text[:MAX_TEXT_CHARS_IN_PROMPT])},
-                ],
-                max_tokens=1024,
-                temperature=0.1,
-            )
-            content = response.choices[0].message.content
-            if not content:
-                continue
             content = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.MULTILINE).strip()
             match = re.search(r"\[[\s\S]*\]", content)
             if not match:
                 continue
             page_names = [str(n).strip() for n in json.loads(match.group(0)) if str(n).strip()]
             if page_names:
-                print(f"  found: {page_names}", flush=True)
+                found_msg = f"  found: {page_names}"
+                print(found_msg, flush=True)
+                if on_progress:
+                    on_progress(found_msg)
             names.update(page_names)
         except Exception as exc:  # noqa: BLE001 - best-effort, one bad page shouldn't stop the rest
-            print(f"  ! extraction failed on this page ({exc}); skipping")
+            print(f"  ! failed to parse names from this page ({exc}); skipping")
 
     return sorted(names)
 
@@ -120,6 +126,7 @@ def mine_leads(
     candidates: list[dict], scraped_pages: list[dict], product: str, country: str,
     max_results_per_query: int = 3, delay_seconds: float = 1.0,
     provider: str = "groq", model: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """Returns the merged candidate list (original + newly mined), deduped."""
     directory_pages = [
@@ -127,7 +134,9 @@ def mine_leads(
         if p.get("source_type") == "directory" and p.get("status") in ("success", "snippet_only")
     ]
     print(f"Mining {len(directory_pages)} directory pages for company names...")
-    names = extract_company_names(directory_pages, product, country, provider=provider, model=model)
+    names = extract_company_names(
+        directory_pages, product, country, provider=provider, model=model, on_progress=on_progress,
+    )
     print(f"\nExtracted {len(names)} candidate company names: {names}")
 
     if not names:
@@ -137,7 +146,7 @@ def mine_leads(
     seen_keys = {c["domain"] for c in candidates if c.get("domain")}
     new_candidates = disc.run_queries(
         queries, max_results_per_query=max_results_per_query,
-        delay_seconds=delay_seconds, seen_keys=seen_keys,
+        delay_seconds=delay_seconds, seen_keys=seen_keys, on_progress=on_progress,
     )
     print(f"\nFound {len(new_candidates)} new candidate URLs from directory mining")
 
@@ -152,7 +161,8 @@ def main() -> None:
     parser.add_argument("--country", required=True)
     parser.add_argument("--max-per-query", type=int, default=3)
     parser.add_argument("--delay", type=float, default=1.0)
-    parser.add_argument("--provider", default="groq", choices=["groq", "gemini", "openai"],
+    parser.add_argument("--provider", default="groq",
+                         choices=["hf", "openai", "groq", "gemini", "claude"],
                          help="Which provider to use for name extraction (default: groq).")
     parser.add_argument("--model", default=None, help="Defaults to the provider's default model")
     args = parser.parse_args()

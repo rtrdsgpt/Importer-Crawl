@@ -34,7 +34,9 @@ PROVIDER_CONFIGS = {
     "groq": {
         "kind": "openai_compatible", "env_var": "GROQ_API_KEY",
         "base_url": "https://api.groq.com/openai/v1",
-        "default_model": "llama-3.3-70b-versatile", "max_tokens": 500,
+        # OpenAI's open-weight 120B flagship, available on Groq's free tier
+        # with a *higher* daily token quota than llama-3.3-70b-versatile.
+        "default_model": "openai/gpt-oss-120b", "max_tokens": 500,
     },
     "gemini": {
         "kind": "openai_compatible", "env_var": "GEMINI_API_KEY",
@@ -58,6 +60,61 @@ PROVIDER_CONFIGS = {
         "default_model": "Qwen/Qwen2.5-7B-Instruct", "max_tokens": 500,
     },
 }
+
+
+def get_raw_completion(
+    provider: str, model: str | None, api_key: str,
+    system_prompt: str, user_prompt: str, max_tokens: int = 2048, temperature: float = 0.3,
+) -> str | None:
+    """Generic single-turn, no-retry completion across all 5 providers, for
+    callers that just need raw text back rather than the full ranking
+    schema+retry treatment below -- e.g. discovery.py's query localization
+    and mine_directories.py's directory name extraction. This is what makes
+    "any provider, anywhere in the pipeline" possible without duplicating
+    each SDK's client-construction logic outside this file. Returns None on
+    any failure; callers treat that as best-effort and move on."""
+    config = PROVIDER_CONFIGS[provider]
+    model = model or config["default_model"]
+    try:
+        if config["kind"] == "openai_compatible":
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url=config["base_url"])
+            response = client.chat.completions.create(
+                model=model, max_tokens=max_tokens, temperature=temperature,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            return response.choices[0].message.content
+
+        if config["kind"] == "anthropic":
+            from anthropic import Anthropic
+            client = Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=model, max_tokens=max_tokens, system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            if response.stop_reason == "refusal":
+                return None
+            return next((b.text for b in response.content if b.type == "text"), None)
+
+        if config["kind"] == "hf":
+            from huggingface_hub import InferenceClient
+            client = InferenceClient(model=model, token=api_key)
+            response = client.chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=model, max_tokens=max_tokens, temperature=temperature,
+            )
+            return response.choices[0].message.content
+
+        raise ValueError(f"unknown provider kind: {config['kind']}")
+    except Exception as exc:  # noqa: BLE001 - best-effort helper, caller decides how to handle None
+        print(f"  ! {provider} completion failed: {exc}")
+        return None
 
 
 def judge_openai_compatible(

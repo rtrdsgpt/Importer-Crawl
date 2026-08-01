@@ -100,34 +100,6 @@ def build_queries(product: str, country: str) -> list[str]:
     return [t.format(product=product, country=country) for t in QUERY_TEMPLATES]
 
 
-# Lightweight OpenAI-API-compatible provider dispatch, shared by
-# generate_localized_queries() below and mine_directories.py's directory
-# name extraction. These are small, best-effort JSON-generation calls, not
-# the full ranking task -- rank_*.py has the full multi-SDK provider
-# support (including non-OpenAI-compatible SDKs like Anthropic/HF) for that.
-LLM_PROVIDER_CONFIGS = {
-    "groq": {"base_url": "https://api.groq.com/openai/v1", "env_var": "GROQ_API_KEY",
-             "default_model": "llama-3.3-70b-versatile"},
-    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-               "env_var": "GEMINI_API_KEY", "default_model": "gemini-3.6-flash"},
-    "openai": {"base_url": None, "env_var": "OPENAI_API_KEY", "default_model": "gpt-4o-mini"},
-}
-
-
-def get_llm_client(provider: str):
-    """Returns (client, default_model, env_var). client is None if the
-    provider's API key isn't set -- caller should skip gracefully rather
-    than error, since these are best-effort auxiliary steps."""
-    if provider not in LLM_PROVIDER_CONFIGS:
-        raise ValueError(f"unknown provider {provider!r}; choices: {list(LLM_PROVIDER_CONFIGS)}")
-    config = LLM_PROVIDER_CONFIGS[provider]
-    api_key = os.environ.get(config["env_var"])
-    if not api_key:
-        return None, config["default_model"], config["env_var"]
-    from openai import OpenAI
-    return OpenAI(api_key=api_key, base_url=config["base_url"]), config["default_model"], config["env_var"]
-
-
 LOCALIZATION_SYSTEM_PROMPT = (
     "You are a market-research assistant helping an Indian exporter find "
     "search queries that a local business buyer would actually type."
@@ -158,28 +130,29 @@ def generate_localized_queries(
     dominates English search results instead.
 
     Best-effort: returns [] if the chosen provider's API key isn't set or
-    the call fails, so discovery still works without localization.
+    the call fails, so discovery still works without localization. Uses
+    rank_engine.get_raw_completion(), so any of the 5 providers supported
+    for ranking works here too -- one provider config for the whole
+    pipeline, not a separate constrained set for auxiliary steps.
     """
-    client, default_model, env_var = get_llm_client(provider)
-    if client is None:
-        print(f"  ! no {env_var} found; skipping localized queries")
+    import rank_engine as rnk
+
+    config = rnk.PROVIDER_CONFIGS[provider]
+    api_key = os.environ.get(config["env_var"])
+    if not api_key:
+        print(f"  ! no {config['env_var']} found; skipping localized queries")
         return []
-    model = model or default_model
+
+    content = rnk.get_raw_completion(
+        provider, model, api_key, LOCALIZATION_SYSTEM_PROMPT,
+        LOCALIZATION_USER_PROMPT.format(product=product, country=country),
+        max_tokens=2048, temperature=0.3,
+    )
+    if not content:
+        print("  ! localized query generation failed; continuing with English queries only")
+        return []
 
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": LOCALIZATION_SYSTEM_PROMPT},
-                {"role": "user", "content": LOCALIZATION_USER_PROMPT.format(
-                    product=product, country=country)},
-            ],
-            max_tokens=2048,
-            temperature=0.3,
-        )
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("model returned empty content")
         content = re.sub(r"^```(?:json)?|```$", "", content.strip(), flags=re.MULTILINE).strip()
         match = re.search(r"\[[\s\S]*\]", content)
         if not match:
@@ -188,7 +161,7 @@ def generate_localized_queries(
         print(f"  localized queries: {queries}")
         return queries
     except Exception as exc:  # noqa: BLE001 - localization is best-effort, never fatal
-        print(f"  ! localized query generation failed ({exc}); continuing with English queries only")
+        print(f"  ! failed to parse localized queries ({exc}); continuing with English queries only")
         return []
 
 
@@ -321,7 +294,8 @@ def main() -> None:
     parser.add_argument("--localize", action="store_true",
                          help="Also generate search queries in the target country's business "
                               "language via an LLM (see --localize-provider).")
-    parser.add_argument("--localize-provider", default="groq", choices=["groq", "gemini", "openai"],
+    parser.add_argument("--localize-provider", default="groq",
+                         choices=["hf", "openai", "groq", "gemini", "claude"],
                          help="Which provider to use for --localize (default: groq).")
     args = parser.parse_args()
 
