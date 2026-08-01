@@ -17,6 +17,7 @@ import json
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -196,23 +197,32 @@ def search_query(ddgs: DDGS, query: str, max_results: int, retries: int = 3) -> 
     return []
 
 
-def discover(
-    product: str,
-    country: str,
+def run_queries(
+    queries: list[str],
     max_results_per_query: int = 8,
     delay_seconds: float = 1.0,
-    localize: bool = False,
+    seen_keys: set[str] | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> list[Candidate]:
-    """Run all query templates and return deduplicated candidates."""
-    queries = build_queries(product, country)
-    if localize:
-        queries += generate_localized_queries(product, country)
-    seen_keys: set[str] = set()
+    """Runs a list of search queries and returns deduplicated candidates.
+    Shared by discover() (English/localized query templates) and
+    mine_directories.py (per-company-name queries from directory mining) --
+    both need the same dedup/classification logic. `seen_keys` can be
+    pre-seeded with domains already known from a prior run, so a second
+    call (e.g. directory mining after initial discovery) won't re-add them.
+    `on_progress`, if given, is called with the same status strings that
+    get printed -- lets a UI (e.g. Streamlit) mirror progress without
+    scraping stdout.
+    """
+    seen_keys = set() if seen_keys is None else seen_keys
     candidates: list[Candidate] = []
 
     with DDGS() as ddgs:
         for i, query in enumerate(queries, start=1):
-            print(f"[{i}/{len(queries)}] searching: {query}", flush=True)
+            msg = f"[{i}/{len(queries)}] searching: {query}"
+            print(msg, flush=True)
+            if on_progress:
+                on_progress(msg)
             results = search_query(ddgs, query, max_results_per_query)
 
             for r in results:
@@ -248,6 +258,21 @@ def discover(
             time.sleep(delay_seconds)  # be polite, avoid rate limiting
 
     return candidates
+
+
+def discover(
+    product: str,
+    country: str,
+    max_results_per_query: int = 8,
+    delay_seconds: float = 1.0,
+    localize: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[Candidate]:
+    """Run all query templates and return deduplicated candidates."""
+    queries = build_queries(product, country)
+    if localize:
+        queries += generate_localized_queries(product, country)
+    return run_queries(queries, max_results_per_query, delay_seconds, on_progress=on_progress)
 
 
 def save_candidates(candidates: list[Candidate], output_path: Path) -> None:

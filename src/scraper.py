@@ -24,6 +24,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib import robotparser
@@ -292,14 +293,20 @@ def scrape_one(candidate: dict, robots: RobotsCache, timeout: float) -> ScrapedP
 
 
 def scrape_all(candidates: list[dict], timeout: float = 10.0,
-                delay_seconds: float = 1.0) -> list[ScrapedPage]:
+                delay_seconds: float = 1.0,
+                on_progress: Callable[[str], None] | None = None) -> list[ScrapedPage]:
     robots = RobotsCache()
     results = []
     for i, candidate in enumerate(candidates, start=1):
-        print(f"[{i}/{len(candidates)}] scraping: {candidate['url']}", flush=True)
+        msg = f"[{i}/{len(candidates)}] scraping: {candidate['url']}"
+        print(msg, flush=True)
+        if on_progress:
+            on_progress(msg)
         page = scrape_one(candidate, robots, timeout)
-        print(f"  -> {page.status}"
-              f"{' (jina fallback)' if page.used_jina_fallback else ''}", flush=True)
+        status_msg = f"  -> {page.status}{' (jina fallback)' if page.used_jina_fallback else ''}"
+        print(status_msg, flush=True)
+        if on_progress:
+            on_progress(status_msg)
         results.append(page)
         if page.status not in ("skipped_linkedin", "skipped_noise"):
             time.sleep(delay_seconds)
