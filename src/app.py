@@ -17,7 +17,6 @@ import io
 import json
 import os
 from dataclasses import asdict
-from functools import partial
 from pathlib import Path
 
 import streamlit as st
@@ -25,12 +24,8 @@ from dotenv import load_dotenv
 
 import discovery as disc
 import mine_directories as miner
-import rank_claude
-import rank_common as rc
-import rank_gemini
-import rank_groq
-import rank_hf
-import rank_openai
+import rank_engine as rnk
+import rank_schema as rc
 import scraper as scr
 import validate as val
 
@@ -38,28 +33,15 @@ load_dotenv()
 
 DATA_DIR = Path("data")
 
-PROVIDERS = {
-    "Groq (free, recommended)": {
-        "env_var": "GROQ_API_KEY", "default_model": rank_groq.DEFAULT_MODEL,
-        "module": rank_groq, "kind": "openai_compatible", "base_url": rank_groq.GROQ_BASE_URL,
-    },
-    "Google Gemini (free)": {
-        "env_var": "GEMINI_API_KEY", "default_model": rank_gemini.DEFAULT_MODEL,
-        "module": rank_gemini, "kind": "openai_compatible", "base_url": rank_gemini.GEMINI_BASE_URL,
-    },
-    "OpenAI": {
-        "env_var": "OPENAI_API_KEY", "default_model": rank_openai.DEFAULT_MODEL,
-        "module": rank_openai, "kind": "openai_compatible", "base_url": None,
-    },
-    "Anthropic Claude": {
-        "env_var": "ANTHROPIC_API_KEY", "default_model": rank_claude.DEFAULT_MODEL,
-        "module": rank_claude, "kind": "anthropic",
-    },
-    "Hugging Face (free, weaker reasoning)": {
-        "env_var": "HF_TOKEN", "default_model": rank_hf.DEFAULT_MODEL,
-        "module": rank_hf, "kind": "hf",
-    },
+# Friendly display labels for rank_engine.py's PROVIDER_CONFIGS keys.
+PROVIDER_LABELS = {
+    "groq": "Groq (free, recommended)",
+    "gemini": "Google Gemini (free)",
+    "openai": "OpenAI",
+    "claude": "Anthropic Claude",
+    "hf": "Hugging Face (free, weaker reasoning)",
 }
+LABEL_TO_PROVIDER = {v: k for k, v in PROVIDER_LABELS.items()}
 
 REQUIRED_COLUMNS = [
     ("company_name", "Company Name"),
@@ -71,24 +53,6 @@ REQUIRED_COLUMNS = [
     ("contact_linkedin", "Contact LinkedIn"),
     ("sources_used", "Sources Used"),
 ]
-
-
-def build_judge_fn(provider_label: str, model: str, api_key: str):
-    info = PROVIDERS[provider_label]
-    module = info["module"]
-    if info["kind"] == "openai_compatible":
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=info.get("base_url"))
-        return partial(module.judge_page, client, model)
-    if info["kind"] == "anthropic":
-        from anthropic import Anthropic
-        client = Anthropic(api_key=api_key)
-        return partial(module.judge_page, client, model)
-    if info["kind"] == "hf":
-        from huggingface_hub import InferenceClient
-        client = InferenceClient(model=model, token=api_key)
-        return partial(module.judge_page, client, model)
-    raise ValueError(f"unknown provider kind: {info['kind']}")
 
 
 def slugify(text: str) -> str:
@@ -142,7 +106,7 @@ def render_results(companies: list[dict], key_prefix: str) -> None:
 def run_pipeline(
     product: str, country: str, provider_label: str, model: str, api_key: str,
     max_per_query: int, delay: float, top_n: int, min_score: int,
-    localize: bool, mine_dirs: bool, validate: bool, use_map_lookup: bool,
+    localize: bool, mine_dirs: bool, aux_provider: str, validate: bool, use_map_lookup: bool,
 ) -> list[dict]:
     slug = f"{slugify(product)}_{slugify(country)}"
     DATA_DIR.mkdir(exist_ok=True)
@@ -151,7 +115,7 @@ def run_pipeline(
         log = status.write
         candidates = disc.discover(
             product, country, max_results_per_query=max_per_query,
-            delay_seconds=delay, localize=localize, on_progress=log,
+            delay_seconds=delay, localize=localize, localize_provider=aux_provider, on_progress=log,
         )
         status.update(label=f"Phase 1 done: {len(candidates)} unique candidates found")
     candidates_dicts = [asdict(c) for c in candidates]
@@ -166,7 +130,7 @@ def run_pipeline(
         with st.status("Phase 2.5: Mining directory pages for more leads...", expanded=True) as status:
             merged_candidates = miner.mine_leads(
                 candidates_dicts, scraped_dicts, product, country,
-                max_results_per_query=3, delay_seconds=delay,
+                max_results_per_query=3, delay_seconds=delay, provider=aux_provider,
             )
             new_count = len(merged_candidates) - len(candidates_dicts)
             status.update(label=f"Phase 2.5 done: {new_count} new leads found; re-scraping...")
@@ -177,7 +141,7 @@ def run_pipeline(
 
     with st.status(f"Phase 3: Ranking with {provider_label}...", expanded=True) as status:
         log = status.write
-        judge_fn = build_judge_fn(provider_label, model, api_key)
+        judge_fn = rnk.build_judge_fn(LABEL_TO_PROVIDER[provider_label], model, api_key)
         ranked = rc.rank_companies(
             scraped_dicts, product=product, country=country, judge_fn=judge_fn,
             top_n=top_n, min_score=min_score, delay_seconds=delay, on_progress=log,
@@ -212,24 +176,30 @@ def main() -> None:
         country = st.text_input("Target Country", value="Germany")
 
         st.header("LLM Provider")
-        provider_label = st.selectbox("Provider", list(PROVIDERS.keys()))
-        info = PROVIDERS[provider_label]
-        model = st.text_input("Model", value=info["default_model"])
-        default_key = os.environ.get(info["env_var"], "")
+        provider_label = st.selectbox("Provider", list(PROVIDER_LABELS.values()))
+        provider_config = rnk.PROVIDER_CONFIGS[LABEL_TO_PROVIDER[provider_label]]
+        model = st.text_input("Model", value=provider_config["default_model"])
+        default_key = os.environ.get(provider_config["env_var"], "")
         api_key = st.text_input(
-            f"{info['env_var']}", value=default_key, type="password",
+            f"{provider_config['env_var']}", value=default_key, type="password",
             help="Pre-filled from your local .env if present.",
         )
 
         st.header("Options")
-        localize = st.checkbox("Localize search queries (via Groq)", value=True,
+        localize = st.checkbox("Localize search queries", value=True,
                                 help="Generates extra search queries in the target country's "
-                                     "business language. Needs GROQ_API_KEY regardless of the "
-                                     "ranking provider chosen above.")
-        mine_dirs = st.checkbox("Mine directory pages for extra leads (via Groq)", value=False,
+                                     "business language.")
+        mine_dirs = st.checkbox("Mine directory pages for extra leads", value=False,
                                  help="Extracts company names from scraped B2B directory pages "
-                                      "and searches for their real websites. Needs GROQ_API_KEY. "
-                                      "Adds significant runtime.")
+                                      "and searches for their real websites. Adds significant runtime.")
+        aux_provider_labels = {k: v for k, v in PROVIDER_LABELS.items() if k in ("groq", "gemini", "openai")}
+        aux_provider_label = st.selectbox(
+            "Auxiliary provider (localization & directory mining)",
+            list(aux_provider_labels.values()), disabled=not (localize or mine_dirs),
+            help="These two steps only support Groq/Gemini/OpenAI (OpenAI-compatible APIs), "
+                 "independent of the ranking provider chosen above.",
+        )
+        aux_provider = {v: k for k, v in aux_provider_labels.items()}[aux_provider_label]
         validate = st.checkbox("Validate country presence (free)", value=True,
                                 help="Deterministic checks: phone country code, country-code "
                                      "TLD, text mentions, and an OSM Nominatim map lookup.")
@@ -250,12 +220,12 @@ def main() -> None:
     with tab_results:
         if run_clicked:
             if not api_key:
-                st.error(f"Please provide a {info['env_var']} value in the sidebar.")
+                st.error(f"Please provide a {provider_config['env_var']} value in the sidebar.")
             else:
                 results = run_pipeline(
                     product, country, provider_label, model, api_key,
                     int(max_per_query), float(delay), top_n, min_score,
-                    localize, mine_dirs, validate, use_map_lookup,
+                    localize, mine_dirs, aux_provider, validate, use_map_lookup,
                 )
                 st.session_state["last_results"] = results
                 st.session_state["last_query"] = f"{product} / {country}"

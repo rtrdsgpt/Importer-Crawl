@@ -100,6 +100,34 @@ def build_queries(product: str, country: str) -> list[str]:
     return [t.format(product=product, country=country) for t in QUERY_TEMPLATES]
 
 
+# Lightweight OpenAI-API-compatible provider dispatch, shared by
+# generate_localized_queries() below and mine_directories.py's directory
+# name extraction. These are small, best-effort JSON-generation calls, not
+# the full ranking task -- rank_*.py has the full multi-SDK provider
+# support (including non-OpenAI-compatible SDKs like Anthropic/HF) for that.
+LLM_PROVIDER_CONFIGS = {
+    "groq": {"base_url": "https://api.groq.com/openai/v1", "env_var": "GROQ_API_KEY",
+             "default_model": "llama-3.3-70b-versatile"},
+    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+               "env_var": "GEMINI_API_KEY", "default_model": "gemini-3.6-flash"},
+    "openai": {"base_url": None, "env_var": "OPENAI_API_KEY", "default_model": "gpt-4o-mini"},
+}
+
+
+def get_llm_client(provider: str):
+    """Returns (client, default_model, env_var). client is None if the
+    provider's API key isn't set -- caller should skip gracefully rather
+    than error, since these are best-effort auxiliary steps."""
+    if provider not in LLM_PROVIDER_CONFIGS:
+        raise ValueError(f"unknown provider {provider!r}; choices: {list(LLM_PROVIDER_CONFIGS)}")
+    config = LLM_PROVIDER_CONFIGS[provider]
+    api_key = os.environ.get(config["env_var"])
+    if not api_key:
+        return None, config["default_model"], config["env_var"]
+    from openai import OpenAI
+    return OpenAI(api_key=api_key, base_url=config["base_url"]), config["default_model"], config["env_var"]
+
+
 LOCALIZATION_SYSTEM_PROMPT = (
     "You are a market-research assistant helping an Indian exporter find "
     "search queries that a local business buyer would actually type."
@@ -121,26 +149,24 @@ commentary. Example shape: ["query one", "query two", ...]
 
 
 def generate_localized_queries(
-    product: str, country: str, model: str = "llama-3.3-70b-versatile",
+    product: str, country: str, provider: str = "groq", model: str | None = None,
 ) -> list[str]:
-    """Asks an LLM (via Groq) for search queries in the target country's
-    business language. English-only queries under-represent genuine local
-    importers, whose sites and self-descriptions are in the local language,
-    while English-language exporter/manufacturer SEO content from third
-    countries dominates English search results instead.
+    """Asks an LLM for search queries in the target country's business
+    language. English-only queries under-represent genuine local importers,
+    whose sites and self-descriptions are in the local language, while
+    English-language exporter/manufacturer SEO content from third countries
+    dominates English search results instead.
 
-    Best-effort: returns [] if no GROQ_API_KEY is set or the call fails,
-    so discovery still works without localization.
+    Best-effort: returns [] if the chosen provider's API key isn't set or
+    the call fails, so discovery still works without localization.
     """
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        print("  ! no GROQ_API_KEY found; skipping localized queries")
+    client, default_model, env_var = get_llm_client(provider)
+    if client is None:
+        print(f"  ! no {env_var} found; skipping localized queries")
         return []
+    model = model or default_model
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -266,12 +292,13 @@ def discover(
     max_results_per_query: int = 8,
     delay_seconds: float = 1.0,
     localize: bool = False,
+    localize_provider: str = "groq",
     on_progress: Callable[[str], None] | None = None,
 ) -> list[Candidate]:
     """Run all query templates and return deduplicated candidates."""
     queries = build_queries(product, country)
     if localize:
-        queries += generate_localized_queries(product, country)
+        queries += generate_localized_queries(product, country, provider=localize_provider)
     return run_queries(queries, max_results_per_query, delay_seconds, on_progress=on_progress)
 
 
@@ -293,7 +320,9 @@ def main() -> None:
                          help="Output JSON path (default: data/candidates_<product>_<country>.json)")
     parser.add_argument("--localize", action="store_true",
                          help="Also generate search queries in the target country's business "
-                              "language via Groq (requires GROQ_API_KEY).")
+                              "language via an LLM (see --localize-provider).")
+    parser.add_argument("--localize-provider", default="groq", choices=["groq", "gemini", "openai"],
+                         help="Which provider to use for --localize (default: groq).")
     args = parser.parse_args()
 
     output_path = Path(args.output) if args.output else Path(
@@ -307,6 +336,7 @@ def main() -> None:
         max_results_per_query=args.max_per_query,
         delay_seconds=args.delay,
         localize=args.localize,
+        localize_provider=args.localize_provider,
     )
 
     save_candidates(candidates, output_path)
