@@ -182,6 +182,7 @@ JudgeFn = Callable[[dict, str, str], Optional[LLMJudgment]]
 def rank_companies(
     pages: list[dict], product: str, country: str, judge_fn: JudgeFn,
     top_n: int, min_score: int, delay_seconds: float,
+    on_progress: Callable[[str], None] | None = None,
 ) -> list[RankedCompany]:
     """Runs judge_fn(page, product, country) over every eligible page,
     filters to genuine buyer-side roles above min_score, and returns the
@@ -191,13 +192,19 @@ def rank_companies(
 
     ranked: list[RankedCompany] = []
     for i, page in enumerate(pages_to_judge, start=1):
-        print(f"[{i}/{len(pages_to_judge)}] judging: {page['url']}", flush=True)
+        msg = f"[{i}/{len(pages_to_judge)}] judging: {page['url']}"
+        print(msg, flush=True)
+        if on_progress:
+            on_progress(msg)
         judgment = judge_fn(page, product, country)
         if judgment is None:
             time.sleep(delay_seconds)
             continue
 
-        print(f"  -> role={judgment.company_role} score={judgment.relevance_score}", flush=True)
+        status_msg = f"  -> role={judgment.company_role} score={judgment.relevance_score}"
+        print(status_msg, flush=True)
+        if on_progress:
+            on_progress(status_msg)
         if judgment.company_role in GENUINE_ROLES and judgment.relevance_score >= min_score:
             ranked.append(to_ranked_company(page, judgment))
 
