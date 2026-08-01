@@ -65,6 +65,7 @@ LinkedIn links found on page: {linkedin_links}
 Found via search query: "{query}"
 Search result snippet: {snippet}
 
+{content_confidence_note}
 PAGE CONTENT (truncated):
 \"\"\"
 {text_content}
@@ -120,6 +121,16 @@ def extract_json_object(text: str | None) -> dict:
     return json.loads(match.group(0))
 
 
+SNIPPET_ONLY_NOTE = (
+    "NOTE: This page's robots.txt disallows automated access, so it was never "
+    "fetched. All you have is the search engine's own title and snippet below "
+    "-- not the actual page. Treat this as thin, low-confidence evidence: do "
+    "not assign a high relevance_score on a search snippet alone, and say "
+    "explicitly in match_reason that this judgment is based only on a search "
+    "snippet, not the full page.\n"
+)
+
+
 def build_prompt(page: dict, product: str, country: str) -> str:
     return USER_PROMPT_TEMPLATE.format(
         product=product,
@@ -132,12 +143,16 @@ def build_prompt(page: dict, product: str, country: str) -> str:
         linkedin_links=page.get("linkedin_links") or [],
         query=page.get("query", ""),
         snippet=page.get("search_snippet", ""),
+        content_confidence_note=SNIPPET_ONLY_NOTE if page.get("status") == "snippet_only" else "",
         text_content=(page.get("text_content") or "")[:MAX_PAGE_CHARS_IN_PROMPT],
     )
 
 
 def eligible_pages(pages: list[dict]) -> list[dict]:
-    return [p for p in pages if p.get("source_type") == "website" and p.get("status") == "success"]
+    return [
+        p for p in pages
+        if p.get("source_type") == "website" and p.get("status") in ("success", "snippet_only")
+    ]
 
 
 def to_ranked_company(page: dict, judgment: LLMJudgment) -> RankedCompany:
@@ -176,13 +191,13 @@ def rank_companies(
 
     ranked: list[RankedCompany] = []
     for i, page in enumerate(pages_to_judge, start=1):
-        print(f"[{i}/{len(pages_to_judge)}] judging: {page['url']}")
+        print(f"[{i}/{len(pages_to_judge)}] judging: {page['url']}", flush=True)
         judgment = judge_fn(page, product, country)
         if judgment is None:
             time.sleep(delay_seconds)
             continue
 
-        print(f"  -> role={judgment.company_role} score={judgment.relevance_score}")
+        print(f"  -> role={judgment.company_role} score={judgment.relevance_score}", flush=True)
         if judgment.company_role in GENUINE_ROLES and judgment.relevance_score >= min_score:
             ranked.append(to_ranked_company(page, judgment))
 

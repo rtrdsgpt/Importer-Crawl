@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -55,6 +56,31 @@ EMAIL_DOMAIN_BLOCKLIST = {
 NON_CONTENT_TAGS = ["script", "style", "noscript", "svg", "nav", "footer", "header"]
 
 
+def _get_with_hard_timeout(url: str, timeout: float, **kwargs) -> requests.Response:
+    """requests' own `timeout=` only bounds each individual read, not the
+    call's total wall-clock time -- a server that trickles bytes slowly (or
+    a DNS/TCP-level stall) can block far past the configured timeout. Run
+    the request in a daemon thread and enforce a real wall-clock cap with
+    Thread.join(); a thread that's still stuck when we give up is abandoned
+    (daemon=True keeps it from blocking process exit)."""
+    box: dict = {}
+
+    def target() -> None:
+        try:
+            box["response"] = requests.get(url, timeout=timeout, **kwargs)
+        except requests.RequestException as exc:
+            box["error"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout + 3)  # small buffer over requests' own timeout
+    if thread.is_alive():
+        raise requests.Timeout(f"hard timeout after {timeout + 3}s (stuck below requests' own timeout)")
+    if "error" in box:
+        raise box["error"]
+    return box["response"]
+
+
 @dataclass
 class ScrapedPage:
     url: str
@@ -62,7 +88,8 @@ class ScrapedPage:
     source_type: str
     title: str
     search_snippet: str
-    status: str  # "success" | "failed" | "skipped_linkedin" | "skipped_noise" | "robots_disallowed"
+    status: str  # "success" | "failed" | "skipped_linkedin" | "skipped_noise"
+                 # | "robots_disallowed" | "snippet_only"
     error: str | None = None
     used_jina_fallback: bool = False
     page_title: str = ""
@@ -93,8 +120,8 @@ class RobotsCache:
 
     def _fetch(self, origin: str) -> robotparser.RobotFileParser | None:
         try:
-            resp = requests.get(f"{origin}/robots.txt", headers=REQUEST_HEADERS,
-                                 timeout=self._timeout)
+            resp = _get_with_hard_timeout(f"{origin}/robots.txt", self._timeout,
+                                           headers=REQUEST_HEADERS)
             if resp.status_code >= 400:
                 return None
             rp = robotparser.RobotFileParser()
@@ -169,13 +196,12 @@ def extract_contacts(html: str) -> tuple[list[str], list[str]]:
 
 
 def fetch_html(url: str, timeout: float) -> requests.Response:
-    return requests.get(url, headers=REQUEST_HEADERS, timeout=timeout, allow_redirects=True)
+    return _get_with_hard_timeout(url, timeout, headers=REQUEST_HEADERS, allow_redirects=True)
 
 
 def fetch_via_jina(url: str, timeout: float) -> str | None:
     try:
-        resp = requests.get(f"{JINA_READER_PREFIX}{url}", headers=REQUEST_HEADERS,
-                             timeout=timeout)
+        resp = _get_with_hard_timeout(f"{JINA_READER_PREFIX}{url}", timeout, headers=REQUEST_HEADERS)
         if resp.status_code == 200 and len(resp.text.strip()) > MIN_TEXT_LEN_BEFORE_FALLBACK:
             return resp.text.strip()[:MAX_TEXT_CHARS]
     except requests.RequestException:
@@ -203,7 +229,20 @@ def scrape_one(candidate: dict, robots: RobotsCache, timeout: float) -> ScrapedP
         return base
 
     if not robots.allowed(url):
-        base.status = "robots_disallowed"
+        # We never fetch a robots.txt-disallowed page ourselves -- but the
+        # search engine already crawled it under its own identity and gave
+        # us a title/snippet in Phase 1. Treating that as thin, low-
+        # confidence evidence (like we do for LinkedIn) is a legitimate,
+        # policy-respecting middle ground between "fetch it anyway" and
+        # "discard everything we know about this candidate".
+        if base.title or base.search_snippet:
+            base.status = "snippet_only"
+            base.text_content = (
+                f"[Search result title]: {base.title}\n"
+                f"[Search result snippet]: {base.search_snippet}"
+            ).strip()
+        else:
+            base.status = "robots_disallowed"
         return base
 
     fetch_error: str | None = None
@@ -257,10 +296,10 @@ def scrape_all(candidates: list[dict], timeout: float = 10.0,
     robots = RobotsCache()
     results = []
     for i, candidate in enumerate(candidates, start=1):
-        print(f"[{i}/{len(candidates)}] scraping: {candidate['url']}")
+        print(f"[{i}/{len(candidates)}] scraping: {candidate['url']}", flush=True)
         page = scrape_one(candidate, robots, timeout)
         print(f"  -> {page.status}"
-              f"{' (jina fallback)' if page.used_jina_fallback else ''}")
+              f"{' (jina fallback)' if page.used_jina_fallback else ''}", flush=True)
         results.append(page)
         if page.status not in ("skipped_linkedin", "skipped_noise"):
             time.sleep(delay_seconds)

@@ -6,3 +6,4 @@ data/cache/
 *.log
 .DS_Store
 .claude/
+.gitignore

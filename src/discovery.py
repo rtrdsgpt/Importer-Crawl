@@ -212,7 +212,7 @@ def discover(
 
     with DDGS() as ddgs:
         for i, query in enumerate(queries, start=1):
-            print(f"[{i}/{len(queries)}] searching: {query}")
+            print(f"[{i}/{len(queries)}] searching: {query}", flush=True)
             results = search_query(ddgs, query, max_results_per_query)
 
             for r in results:
