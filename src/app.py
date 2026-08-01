@@ -60,6 +60,12 @@ def slugify(text: str) -> str:
     return text.lower().replace(" ", "_")
 
 
+def save_json(path: Path, data: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
 def rows_for_display(companies: list[dict]) -> list[dict]:
     rows = []
     for c in companies:
@@ -110,19 +116,19 @@ PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\]")
 def make_progress_logger(status):
     """Every pipeline stage prints/on_progress's a "[i/N] doing thing" line
     per item -- this wraps status.write() to also drive a real st.progress
-    bar off that same "[i/N]" prefix, lazily created on the first match, so
-    each phase gets both a live text log and a numeric progress bar without
-    changing every pipeline module's callback signature again."""
-    bar = {"widget": None}
+    bar off that same "[i/N]" prefix, so each phase gets both a live text
+    log and a numeric progress bar without changing every pipeline module's
+    callback signature again. The bar is created immediately (not lazily on
+    first match) so it renders above the per-item log lines, not after the
+    first one -- call this right before starting the loop it tracks."""
+    bar = status.progress(0.0)
 
     def log(msg: str) -> None:
         status.write(msg)
         match = PROGRESS_RE.match(msg)
         if match:
             current, total = int(match.group(1)), int(match.group(2))
-            if bar["widget"] is None:
-                bar["widget"] = status.progress(0.0)
-            bar["widget"].progress(min(current / total, 1.0))
+            bar.progress(min(current / total, 1.0))
 
     return log
 
@@ -131,10 +137,23 @@ def run_pipeline(
     product: str, country: str, provider_label: str, model: str, api_key: str,
     max_per_query: int, delay: float, top_n: int, min_score: int,
     localize: bool, mine_dirs: bool, validate: bool, use_map_lookup: bool,
-) -> list[dict]:
+) -> dict:
     slug = f"{slugify(product)}_{slugify(country)}"
     DATA_DIR.mkdir(exist_ok=True)
     provider = LABEL_TO_PROVIDER[provider_label]
+
+    # Discovery, Scraping, and Ranking always run; Directory Mining and
+    # Validation are optional -- only count enabled phases so the overall
+    # bar actually reaches 100% instead of stalling on skipped phases.
+    total_phases = 3 + int(mine_dirs) + int(validate)
+    phases_done = 0
+    st.caption("Overall pipeline progress")
+    overall_bar = st.progress(0.0)
+
+    def advance_overall(label: str) -> None:
+        nonlocal phases_done
+        phases_done += 1
+        overall_bar.progress(phases_done / total_phases, text=f"{label} ({phases_done}/{total_phases} phases)")
 
     with st.status("Phase 1: Discovering candidate companies...", expanded=True) as status:
         status.write(
@@ -151,7 +170,10 @@ def run_pipeline(
             delay_seconds=delay, localize=localize, localize_provider=provider, on_progress=make_progress_logger(status),
         )
         status.update(label=f"Phase 1 done: {len(candidates)} unique candidates found")
+    advance_overall("Phase 1 (Discovery) done")
     candidates_dicts = [asdict(c) for c in candidates]
+    candidates_path = DATA_DIR / f"candidates_{slug}.json"
+    save_json(candidates_path, candidates_dicts)
 
     with st.status("Phase 2: Scraping candidate pages...", expanded=True) as status:
         status.write(
@@ -162,7 +184,10 @@ def run_pipeline(
         )
         scraped = scr.scrape_all(candidates_dicts, delay_seconds=delay, on_progress=make_progress_logger(status))
         status.update(label=f"Phase 2 done: {len(scraped)} pages scraped")
+    advance_overall("Phase 2 (Scraping) done")
     scraped_dicts = [asdict(p) for p in scraped]
+    scraped_path = DATA_DIR / f"scraped_{slug}.json"
+    save_json(scraped_path, scraped_dicts)
 
     if mine_dirs:
         with st.status("Phase 2.5: Mining directory pages for more leads...", expanded=True) as status:
@@ -177,12 +202,23 @@ def run_pipeline(
                 max_results_per_query=3, delay_seconds=delay, provider=provider,
                 on_progress=make_progress_logger(status),
             )
-            new_count = len(merged_candidates) - len(candidates_dicts)
-            status.update(label=f"Phase 2.5 done: {new_count} new leads found; re-scraping...")
+            # mine_leads returns candidates_dicts + newly found ones appended --
+            # only scrape the new tail, then merge into (not replace) what
+            # Phase 2 already scraped. Re-scraping everything here would waste
+            # time and LLM-provider quota on pages we already have.
+            new_candidates_only = merged_candidates[len(candidates_dicts):]
+            new_count = len(new_candidates_only)
+            status.update(label=f"Phase 2.5 done: {new_count} new leads found; scraping those...")
             if new_count > 0:
-                scraped = scr.scrape_all(merged_candidates, delay_seconds=delay, on_progress=make_progress_logger(status))
-                scraped_dicts = [asdict(p) for p in scraped]
+                newly_scraped = scr.scrape_all(
+                    new_candidates_only, delay_seconds=delay, on_progress=make_progress_logger(status),
+                )
+                scraped_dicts = scraped_dicts + [asdict(p) for p in newly_scraped]
+                candidates_dicts = merged_candidates
+                save_json(candidates_path, candidates_dicts)
+                save_json(scraped_path, scraped_dicts)
             status.update(label=f"Phase 2.5 done: {new_count} new leads added and scraped")
+        advance_overall("Phase 2.5 (Directory Mining) done")
 
     with st.status(f"Phase 3: Ranking with {provider_label}...", expanded=True) as status:
         status.write(
@@ -192,14 +228,17 @@ def run_pipeline(
             "are checked against what was actually found on the page -- nothing invented is kept."
         )
         judge_fn = rnk.build_judge_fn(provider, model, api_key)
+        results_path = DATA_DIR / f"results_{slug}.json"
         ranked = rc.rank_companies(
             scraped_dicts, product=product, country=country, judge_fn=judge_fn,
             top_n=top_n, min_score=min_score, delay_seconds=delay, on_progress=make_progress_logger(status),
+            checkpoint_path=results_path,
         )
         status.update(label=f"Phase 3 done: {len(ranked)} genuine importers ranked")
+    advance_overall("Phase 3 (Ranking) done")
     ranked_dicts = [c.model_dump() for c in ranked]
 
-    rc.save_ranked(ranked, DATA_DIR / f"results_{slug}.json")
+    rc.save_ranked(ranked, results_path)
 
     if validate:
         with st.status("Phase 3.5: Validating country presence...", expanded=True) as status:
@@ -214,11 +253,18 @@ def run_pipeline(
                 ranked_dicts, scraped_dicts, country, use_map_lookup=use_map_lookup, on_progress=make_progress_logger(status),
             )
             status.update(label=f"Phase 3.5 done: {len(validated)} companies validated")
+        advance_overall("Phase 3.5 (Validation) done")
         with (DATA_DIR / f"validated_{slug}.json").open("w", encoding="utf-8") as f:
             json.dump(validated, f, indent=2, ensure_ascii=False)
-        return validated
+        final = validated
+    else:
+        final = ranked_dicts
 
-    return ranked_dicts
+    return {
+        "final": final,
+        "candidates": candidates_dicts,
+        "scraped": scraped_dicts,
+    }
 
 
 def main() -> None:
@@ -271,17 +317,37 @@ def main() -> None:
             if not api_key:
                 st.error(f"Please provide a {provider_config['env_var']} value in the sidebar.")
             else:
-                results = run_pipeline(
+                run_output = run_pipeline(
                     product, country, provider_label, model, api_key,
                     int(max_per_query), float(delay), top_n, min_score,
                     localize, mine_dirs, validate, use_map_lookup,
                 )
-                st.session_state["last_results"] = results
+                st.session_state["last_run"] = run_output
                 st.session_state["last_query"] = f"{product} / {country}"
 
-        if "last_results" in st.session_state:
+        if "last_run" in st.session_state:
+            run_output = st.session_state["last_run"]
             st.subheader(f"Results: {st.session_state['last_query']}")
-            render_results(st.session_state["last_results"], key_prefix="run")
+            render_results(run_output["final"], key_prefix="run")
+
+            with st.expander("Intermediate outputs (candidates, scraped pages)"):
+                st.caption(
+                    "Everything the pipeline found along the way -- useful for debugging "
+                    "why a company was or wasn't included in the final results."
+                )
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        f"Download candidates ({len(run_output['candidates'])})",
+                        data=json.dumps(run_output["candidates"], indent=2, ensure_ascii=False),
+                        file_name="candidates.json", mime="application/json", key="candidates_json",
+                    )
+                with col2:
+                    st.download_button(
+                        f"Download scraped pages ({len(run_output['scraped'])})",
+                        data=json.dumps(run_output["scraped"], indent=2, ensure_ascii=False),
+                        file_name="scraped.json", mime="application/json", key="scraped_json",
+                    )
         elif not run_clicked:
             st.info(
                 "Configure a search in the sidebar and click **Run Discovery Engine**.\n\n"

@@ -265,10 +265,15 @@ def scrape_one(candidate: dict, robots: RobotsCache, timeout: float) -> ScrapedP
     if resp is not None:
         content_type = resp.headers.get("Content-Type", "")
         if "text/html" not in content_type and content_type != "":
-            base.error = f"non-HTML content-type: {content_type}"
-            return base
-        page_title, meta_description, text, linkedin_links = extract_text_and_meta(resp.text, url)
-        emails, phones = extract_contacts(resp.text)
+            # Not HTML (e.g. a PDF) -- BeautifulSoup can't parse this, but
+            # Jina Reader often can (it does PDF text extraction). Treat it
+            # like a failed fetch so the fallback below gets a chance,
+            # instead of giving up immediately.
+            fetch_error = f"non-HTML content-type: {content_type}"
+            resp = None
+        else:
+            page_title, meta_description, text, linkedin_links = extract_text_and_meta(resp.text, url)
+            emails, phones = extract_contacts(resp.text)
 
     # Fall back to Jina Reader when the direct fetch was blocked/failed
     # outright, or when it "succeeded" but returned near-empty text

@@ -56,6 +56,19 @@ dealers/architects/customers", which indicates a SELLER, not a buyer
 If the evidence is genuinely ambiguous or thin, use a low-to-mid score and say so \
 plainly in match_reason -- do not assign a high score to a weakly-supported guess.
 
+Use this rubric for relevance_score so scores are comparable across companies:
+- 0-10: Wrong role entirely (manufacturer/exporter/directory/irrelevant), or no \
+real evidence either way
+- 11-30: Wrong role, but with some tangential connection to {product} or {country}
+- 31-50: Plausible buyer-side role, but evidence is indirect, thin, or inferred \
+rather than stated
+- 51-70: Genuine buyer-side role with reasonable direct evidence (e.g. page \
+describes sourcing/stocking/distributing {product})
+- 71-90: Strong, clear, explicit evidence of a genuine buyer-side role active in \
+{country}
+- 91-100: Unambiguous, well-documented match with multiple corroborating details \
+(role, country, product all explicitly confirmed on the page)
+
 COMPANY DATA
 URL: {url}
 Page title: {page_title}
@@ -110,6 +123,13 @@ class RankedCompany(BaseModel):
     contact_linkedin: Optional[str] = None
     sources_used: list[str]
     company_role: str  # kept for transparency, beyond the required 8 fields
+
+
+def first_sentence(text: str) -> str:
+    """First sentence of match_reason, for a compact one-line log summary --
+    the full reason is still kept in the saved output."""
+    match = re.match(r"\s*[^.!?]*[.!?]", text)
+    return match.group(0).strip() if match else text.strip()
 
 
 def extract_json_object(text: str | None) -> dict:
@@ -184,12 +204,32 @@ def rank_companies(
     pages: list[dict], product: str, country: str, judge_fn: JudgeFn,
     top_n: int, min_score: int, delay_seconds: float,
     on_progress: Callable[[str], None] | None = None,
+    checkpoint_path: Path | None = None,
 ) -> list[RankedCompany]:
     """Runs judge_fn(page, product, country) over every eligible page,
     filters to genuine buyer-side roles above min_score, and returns the
-    top_n ranked by relevance_score."""
+    top_n ranked by relevance_score.
+
+    If checkpoint_path is given, the current best-known results are written
+    to disk after every single qualifying judgment (not just at the end) --
+    a run that takes hours and gets interrupted, rate-limited into the
+    ground, or crashes partway through still leaves real results on disk
+    instead of nothing."""
     pages_to_judge = eligible_pages(pages)
-    print(f"Evaluating {len(pages_to_judge)} scraped company pages...")
+
+    # eligible_pages() only keeps source_type=="website" pages that were
+    # actually scraped -- "directory" pages (europages, kompass, etc.) are
+    # excluded on purpose, since the directory listing itself is never the
+    # company; noise/failed/linkedin pages have nothing to judge either way.
+    # Spelling out the breakdown here means "N scraped but M judged" is
+    # self-explanatory in the log instead of looking like a bug.
+    directory_count = sum(1 for p in pages if p.get("source_type") == "directory")
+    other_excluded = len(pages) - len(pages_to_judge) - directory_count
+    print(
+        f"Evaluating {len(pages_to_judge)} of {len(pages)} scraped pages "
+        f"({directory_count} directory pages excluded -- not companies themselves; "
+        f"{other_excluded} failed/skipped/noise pages excluded -- nothing to judge)"
+    )
 
     ranked: list[RankedCompany] = []
     for i, page in enumerate(pages_to_judge, start=1):
@@ -202,12 +242,18 @@ def rank_companies(
             time.sleep(delay_seconds)
             continue
 
-        status_msg = f"  -> role={judgment.company_role} score={judgment.relevance_score}"
+        status_msg = (
+            f"  -> role={judgment.company_role} score={judgment.relevance_score}"
+            f" -- {first_sentence(judgment.match_reason)}"
+        )
         print(status_msg, flush=True)
         if on_progress:
             on_progress(status_msg)
         if judgment.company_role in GENUINE_ROLES and judgment.relevance_score >= min_score:
             ranked.append(to_ranked_company(page, judgment))
+            if checkpoint_path:
+                checkpoint = sorted(ranked, key=lambda c: c.relevance_score, reverse=True)[:top_n]
+                save_ranked(checkpoint, checkpoint_path)
 
         time.sleep(delay_seconds)
 
