@@ -52,7 +52,8 @@ Phase 2.5 (optional)
         |  (extract company names from directory pages already scraped,
         |   search for their real websites, feed back into Phase 2)
         v
-Phase 3  rank_<provider>.py   --> data/results_<product>_<country>.json
+Phase 3  rank_engine.py       --> data/results_<product>_<country>.json
+        |  --provider {hf,openai,groq,gemini,claude}
         |  (LLM judges genuine-importer role + relevance score per company)
         v
 Phase 3.5 (optional)
@@ -67,11 +68,11 @@ Phase 4  app.py (Streamlit)
 
 | File | Phase | Responsibility |
 |---|---|---|
-| `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup |
+| `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup, shared OpenAI-compatible provider dispatch (`get_llm_client`) used by localization and directory mining |
 | `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, Jina Reader fallback for JS-heavy pages, robots.txt enforcement, contact extraction |
 | `src/mine_directories.py` | 2.5 | LLM extraction of company names from directory pages, follow-up search per name |
-| `src/rank_common.py` | 3 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting — used by every provider script |
-| `src/rank_hf.py` / `rank_openai.py` / `rank_groq.py` / `rank_gemini.py` / `rank_claude.py` | 3 | Thin per-provider LLM client wrappers (Hugging Face, OpenAI, Groq, Google Gemini, Anthropic Claude) sharing `rank_common.py` |
+| `src/rank_schema.py` | 3 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting — used by every provider |
+| `src/rank_engine.py` | 3 | Single CLI (`--provider {hf,openai,groq,gemini,claude}`) dispatching to the right SDK (OpenAI-compatible client for OpenAI/Groq/Gemini, `anthropic` for Claude, `huggingface_hub` for HF), sharing `rank_schema.py` |
 | `src/validate.py` | 3.5 | Deterministic country-presence signals (phone code, TLD, text mention, free OSM geocoding) |
 | `src/app.py` | 4 | Streamlit dashboard: runs the full pipeline live, or browses saved results, with CSV/JSON export |
 
@@ -85,10 +86,13 @@ result inspectable and re-runnable (e.g. re-rank already-scraped data with
 a different LLM provider without re-scraping), and keeps each stage's
 failure modes isolated.
 
-**Multiple LLM providers behind a shared interface.** `rank_common.py`
+**Multiple LLM providers behind a shared interface.** `rank_schema.py`
 holds the prompt, the Pydantic output schema, the hallucination guard, and
-the ranking/filtering logic once; each `rank_<provider>.py` file only
-implements that provider's API call. This was necessary in practice —
+the ranking/filtering logic once; `rank_engine.py` picks a `--provider`
+(`hf`, `openai`, `groq`, `gemini`, `claude`) and dispatches to the right
+SDK — an OpenAI-compatible client for OpenAI/Groq/Gemini, `anthropic` for
+Claude, `huggingface_hub` for HF — reusing the same prompt/schema either
+way. This was necessary in practice —
 during development the free Hugging Face tier ran out of credits and its
 7B model confidently misclassified a German tile *manufacturer*
 (`agrob-buchtal.de`) as a "buyer" at relevance score 85, which is exactly
@@ -309,30 +313,28 @@ re-running anything.
 ### Option B: CLI, phase by phase
 
 ```bash
-# Phase 1: Discovery (add --localize for target-language queries, needs GROQ_API_KEY)
+# Phase 1: Discovery (add --localize for target-language queries; --localize-provider
+# defaults to groq, also accepts gemini/openai)
 python src/discovery.py --product "Ceramic Tiles" --country "Germany" --localize
 
 # Phase 2: Scraping
 python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
 
 # Phase 2.5 (optional): Directory lead mining -- then re-run Phase 2 to scrape the new leads
+# (--provider defaults to groq, also accepts gemini/openai)
 python src/mine_directories.py \
     --candidates data/candidates_ceramic_tiles_germany.json \
     --scraped data/scraped_ceramic_tiles_germany.json \
     --product "Ceramic Tiles" --country "Germany"
 python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
 
-# Phase 3: Ranking (pick one provider script)
-python src/rank_groq.py --input data/scraped_ceramic_tiles_germany.json \
-    --product "Ceramic Tiles" --country "Germany" --top-n 10 --min-score 40
+# Phase 3: Ranking (--provider: hf, openai, groq, gemini, or claude)
+python src/rank_engine.py --input data/scraped_ceramic_tiles_germany.json \
+    --product "Ceramic Tiles" --country "Germany" --provider groq --top-n 10 --min-score 40
 
 # Phase 3.5 (optional): Country-presence validation
 python src/validate.py --input data/results_ceramic_tiles_germany.json --country "Germany"
 ```
-
-Each provider script (`rank_hf.py`, `rank_openai.py`, `rank_groq.py`,
-`rank_gemini.py`, `rank_claude.py`) takes the same `--input --product
---country --top-n --min-score` flags.
 
 ---
 

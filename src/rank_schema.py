@@ -1,15 +1,16 @@
 """
 Shared logic for Phase 3 (LLM Reasoning, Filtering & Ranking).
 
-Provider-specific scripts (rank_hf.py, rank_openai.py, rank_claude.py) each
-implement just the API call for their LLM and reuse everything else from
-here: the prompt, the pydantic schemas, hallucination-guarded contact
-validation, and the rank/sort/save pipeline.
+rank_engine.py implements the per-provider API calls (OpenAI-compatible,
+Anthropic, Hugging Face) and reuses everything else from here: the prompt,
+the pydantic schemas, hallucination-guarded contact validation, and the
+rank/sort/save pipeline.
 
-Only pages that were actually scraped successfully (source_type "website",
-status "success") are evaluated -- we don't guess at a company from a
-search snippet alone, since that risks fabricating details rather than
-grounding them in real page content.
+Only "website" pages that were either fully scraped ("success") or, for
+robots.txt-disallowed pages, have a search-engine snippet ("snippet_only",
+explicitly flagged as low-confidence in the prompt) are evaluated -- we
+don't guess at a company from nothing, since that risks fabricating
+details rather than grounding them in real evidence.
 """
 
 from __future__ import annotations

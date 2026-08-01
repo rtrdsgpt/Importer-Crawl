@@ -21,17 +21,16 @@ contact info) and rank_*.py (to be judged) like any other candidate --
 this stage only expands the candidate pool.
 
 Usage:
-    export GROQ_API_KEY=gsk_...
+    export GROQ_API_KEY=gsk_...   # or GEMINI_API_KEY / OPENAI_API_KEY with --provider
     python src/mine_directories.py --candidates data/candidates_ceramic_tiles_germany.json \\
         --scraped data/scraped_ceramic_tiles_germany.json \\
-        --product "Ceramic Tiles" --country "Germany"
+        --product "Ceramic Tiles" --country "Germany" --provider groq
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 from dataclasses import asdict
 from pathlib import Path
@@ -42,7 +41,6 @@ import discovery as disc
 
 load_dotenv()
 
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
 MAX_DIRECTORY_PAGES = 15  # bound cost: directory pages can be numerous per run
 MAX_TEXT_CHARS_IN_PROMPT = 4000
 
@@ -73,16 +71,14 @@ no commentary). If no real company names are present, respond with [].
 
 
 def extract_company_names(
-    directory_pages: list[dict], product: str, country: str, model: str = DEFAULT_MODEL,
+    directory_pages: list[dict], product: str, country: str,
+    provider: str = "groq", model: str | None = None,
 ) -> list[str]:
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        print("  ! no GROQ_API_KEY found; skipping directory mining")
+    client, default_model, env_var = disc.get_llm_client(provider)
+    if client is None:
+        print(f"  ! no {env_var} found; skipping directory mining")
         return []
-
-    from openai import OpenAI
-
-    client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+    model = model or default_model
 
     names: set[str] = set()
     pages = directory_pages[:MAX_DIRECTORY_PAGES]
@@ -122,7 +118,8 @@ def extract_company_names(
 
 def mine_leads(
     candidates: list[dict], scraped_pages: list[dict], product: str, country: str,
-    max_results_per_query: int = 3, delay_seconds: float = 1.0, model: str = DEFAULT_MODEL,
+    max_results_per_query: int = 3, delay_seconds: float = 1.0,
+    provider: str = "groq", model: str | None = None,
 ) -> list[dict]:
     """Returns the merged candidate list (original + newly mined), deduped."""
     directory_pages = [
@@ -130,7 +127,7 @@ def mine_leads(
         if p.get("source_type") == "directory" and p.get("status") in ("success", "snippet_only")
     ]
     print(f"Mining {len(directory_pages)} directory pages for company names...")
-    names = extract_company_names(directory_pages, product, country, model)
+    names = extract_company_names(directory_pages, product, country, provider=provider, model=model)
     print(f"\nExtracted {len(names)} candidate company names: {names}")
 
     if not names:
@@ -155,7 +152,9 @@ def main() -> None:
     parser.add_argument("--country", required=True)
     parser.add_argument("--max-per-query", type=int, default=3)
     parser.add_argument("--delay", type=float, default=1.0)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--provider", default="groq", choices=["groq", "gemini", "openai"],
+                         help="Which provider to use for name extraction (default: groq).")
+    parser.add_argument("--model", default=None, help="Defaults to the provider's default model")
     args = parser.parse_args()
 
     candidates_path = Path(args.candidates)
@@ -164,7 +163,8 @@ def main() -> None:
 
     merged = mine_leads(
         candidates, scraped_pages, product=args.product, country=args.country,
-        max_results_per_query=args.max_per_query, delay_seconds=args.delay, model=args.model,
+        max_results_per_query=args.max_per_query, delay_seconds=args.delay,
+        provider=args.provider, model=args.model,
     )
 
     with candidates_path.open("w", encoding="utf-8") as f:
