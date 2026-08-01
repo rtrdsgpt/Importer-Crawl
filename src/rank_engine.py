@@ -132,7 +132,12 @@ def judge_openai_compatible(
     for attempt in range(1, retries + 2):
         try:
             response = client.chat.completions.create(
-                model=model, messages=messages, max_tokens=max_tokens, temperature=0.1,
+                # temperature=0 for maximum determinism -- this is a judgment
+                # task, not creative generation, and Claude (elsewhere in this
+                # file) can't even take a temperature override on current
+                # models, so this keeps behavior as consistent as possible
+                # across providers where it's actually configurable.
+                model=model, messages=messages, max_tokens=max_tokens, temperature=0.0,
                 response_format={"type": "json_object"},
             )
             content = response.choices[0].message.content
@@ -164,6 +169,9 @@ def judge_claude(
     client, model: str, max_tokens: int, page: dict, product: str, country: str,
     retries: int = 2,
 ) -> rc.LLMJudgment | None:
+    # No temperature override here on purpose: claude-sonnet-5 and other
+    # current Claude models return a 400 on any non-default temperature/
+    # top_p/top_k. The rubric in the prompt is the determinism lever here.
     from anthropic import APIConnectionError, APIError, RateLimitError
 
     messages = [{"role": "user", "content": rc.build_prompt(page, product, country)}]
@@ -218,7 +226,7 @@ def judge_hf(
     for attempt in range(1, retries + 2):
         try:
             response = client.chat_completion(
-                messages=messages, model=model, max_tokens=max_tokens, temperature=0.1,
+                messages=messages, model=model, max_tokens=max_tokens, temperature=0.0,
             )
             content = response.choices[0].message.content
             data = rc.extract_json_object(content)
@@ -298,6 +306,7 @@ def main() -> None:
     ranked = rc.rank_companies(
         pages, product=args.product, country=args.country, judge_fn=judge_fn,
         top_n=args.top_n, min_score=args.min_score, delay_seconds=args.delay,
+        checkpoint_path=output_path,
     )
     rc.save_ranked(ranked, output_path)
     rc.print_summary(ranked, args.min_score, output_path)
