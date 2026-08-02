@@ -66,7 +66,7 @@ GROQ_API_KEY=...          # https://console.groq.com/keys (free)
 The optional localized-query generation and directory-mining steps use
 whichever provider you pick for ranking — no separate key needed for them.
 
-### Option A: `main.py` (simplest — one command, whole pipeline)
+### Option A: `main.py` (whole pipeline in one command)
 
 ```bash
 python main.py --product "Ceramic Tiles" --country "Germany" --provider groq
@@ -86,7 +86,10 @@ of nothing. `python main.py --help` for the full flag list.
 streamlit run app.py
 ```
 
-Opens at `http://localhost:8501`. Enter a product and country, pick an
+<img width="1470" height="832" alt="image" src="https://github.com/user-attachments/assets/9aab9aa1-a1cb-4b04-92ca-484eab6c8b4e" />
+
+
+Opens at a local host or hosted on [streamlit](https://importer-crawl.streamlit.app). Enter a product and country, pick an
 LLM provider, toggle localization/directory-mining/validation, and click
 **Run Discovery Engine** — every stage streams live progress (a log and a
 progress bar) plus an overall pipeline progress bar. Results, and the
