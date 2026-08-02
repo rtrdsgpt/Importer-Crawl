@@ -518,12 +518,12 @@ Phase 5 validation) is in `data/results_*.json` / `data/validated_*.json`.
 | Clydesdale Pharma Ltd | [clydesdalepharma.com](https://www.clydesdalepharma.com/suppliers) | 91 | Self-identifies as "Pharmaceutical wholesaler," UK-based, dedicated suppliers page |
 | Nelson Pharmaceuticals | [nelsonpharma.co.uk](https://nelsonpharma.co.uk/) | 91 | Explicit "UK Pharmaceutical Import & Distribution" role in page content |
 
-A couple of honest observations from these four runs, not just the highlights:
+Some observations and limitations:
 
 - The Auto Components top hit is a news article *about* an importer, not the
   importer's own site — legitimate evidence (the article names and quotes
   the company), but a reminder that `Website` in the output is "the page
-  that was judged," not necessarily "the company's homepage."
+  that was judged," not necessarily "the company's homepage." Something an AI Agent would probe further and find better results for.
 - Lower scores (UAE's 51s) show the rubric working as intended: real
   buyer-side signal, but thin/inferred evidence gets a mid score instead of
   a confident 90, exactly per the [Ranking Methodology](#ranking-methodology).
