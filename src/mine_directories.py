@@ -93,10 +93,11 @@ def extract_company_names(
     import rank_engine as rnk
 
     config = rnk.PROVIDER_CONFIGS[provider]
-    api_key = os.environ.get(config["env_var"])
-    if not api_key:
+    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]))
+    if not api_keys:
         print(f"  ! no {config['env_var']} found; skipping directory/report mining")
         return []
+    api_key = api_keys[0]
 
     names: set[str] = set()
     pages = pages_to_mine[:MAX_PAGES_TO_MINE]

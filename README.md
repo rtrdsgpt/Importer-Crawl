@@ -210,15 +210,31 @@ entire run's output was lost. `rank_companies()` now writes the current
 best-known results to disk after *every* qualifying judgment, so the
 results file always reflects real progress, not just a completed run.
 
-**Fail fast on unrecoverable rate limits.** A per-minute rate limit is
-worth retrying with backoff; a daily-quota rate limit is not — retrying
-still fails identically on every one of the remaining pages, burning
-wall-clock time for nothing. `rank_engine.is_hard_rate_limit()`
-pattern-matches provider error messages for daily/quota language (seen in
-practice on Groq's "tokens per day" limit) and raises a distinct
-`HardRateLimitError` that `rank_companies()` catches to stop the run
-immediately, returning whatever's already been checkpointed instead of
-grinding through certain-to-fail retries on everything left.
+**Fail fast on unrecoverable rate limits, rotate keys if available.** A
+per-minute rate limit is worth retrying with backoff; a daily-quota rate
+limit is not — retrying still fails identically on every one of the
+remaining pages, burning wall-clock time for nothing.
+`rank_engine.is_hard_rate_limit()` pattern-matches provider error messages
+for daily/quota language (seen in practice on Groq's "tokens per day"
+limit) and raises a distinct `HardRateLimitError`. If only one API key is
+configured, `rank_companies()` catches this and stops the run immediately,
+returning whatever's already been checkpointed instead of grinding through
+certain-to-fail retries on everything left. If more than one key is
+configured (see below), it instead switches to the next key and retries
+the *same* page, so one free-tier key running dry partway through a long
+run doesn't waste every remaining page — it only stops for real once every
+configured key has hit its daily quota.
+
+**Multiple API keys, round-robin on quota exhaustion.** Free-tier daily
+token quotas (e.g. Groq) are the most common practical wall a long
+discovery run hits. Any provider's env var (`GROQ_API_KEY`, etc.) accepts
+a comma-separated list of keys — `GROQ_API_KEY=key_one,key_two` — and
+`rank_engine.build_key_rotator()` builds a judge function per key on
+demand, handed to `rank_companies()` as `next_judge_fn`. A single key
+still behaves exactly as before (`next_judge_fn` immediately returns
+`None`, so there's nothing to opt into or configure specially). The
+Streamlit app's API key field and `main.py`/`rank_engine.py`'s `--api-key`
+flag accept the same comma-separated format.
 
 **Domain classification at discovery time.** Every discovered URL is
 tagged `website` / `directory` / `report` / `noise` / `social` based on its

@@ -46,6 +46,7 @@ COUNTRY_CALLING_CODES = {
     "saudi arabia": "966", "australia": "61", "canada": "1", "japan": "81",
     "south korea": "82", "singapore": "65", "brazil": "55", "mexico": "52",
     "south africa": "27", "turkey": "90", "china": "86", "india": "91",
+    "kenya": "254",
 }
 
 COUNTRY_TLDS = {
@@ -55,7 +56,7 @@ COUNTRY_TLDS = {
     "poland": ".pl", "sweden": ".se", "saudi arabia": ".sa", "australia": ".au",
     "canada": ".ca", "japan": ".jp", "south korea": ".kr", "singapore": ".sg",
     "brazil": ".br", "mexico": ".mx", "south africa": ".za", "turkey": ".tr",
-    "china": ".cn", "india": ".in",
+    "china": ".cn", "india": ".in", "kenya": ".ke",
 }
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"

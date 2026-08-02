@@ -248,6 +248,7 @@ def rank_companies(
     top_n: int, min_score: int, delay_seconds: float,
     on_progress: Callable[[str], None] | None = None,
     checkpoint_path: Path | None = None,
+    next_judge_fn: Callable[[], Optional[JudgeFn]] | None = None,
 ) -> list[RankedCompany]:
     """Runs judge_fn(page, product, country) over every eligible page,
     filters to genuine buyer-side roles above min_score, and returns the
@@ -257,7 +258,14 @@ def rank_companies(
     to disk after every single qualifying judgment (not just at the end) --
     a run that takes hours and gets interrupted, rate-limited into the
     ground, or crashes partway through still leaves real results on disk
-    instead of nothing."""
+    instead of nothing.
+
+    If next_judge_fn is given, a HardRateLimitError (daily quota, not a
+    transient per-minute limit) doesn't stop the run -- it calls
+    next_judge_fn() for a judge_fn built on the next API key and retries
+    the same page, so one key running out mid-run doesn't waste every
+    remaining page. Only once next_judge_fn() itself returns None (no more
+    keys) does the run stop early as before."""
     pages_to_judge = eligible_pages(pages)
 
     # eligible_pages() only keeps source_type=="website" pages that were
@@ -275,22 +283,42 @@ def rank_companies(
     )
 
     ranked: list[RankedCompany] = []
+    give_up = False
     for i, page in enumerate(pages_to_judge, start=1):
         msg = f"[{i}/{len(pages_to_judge)}] judging: {page['url']}"
         print(msg, flush=True)
         if on_progress:
             on_progress(msg)
-        try:
-            judgment = judge_fn(page, product, country)
-        except HardRateLimitError as exc:
-            stop_msg = (
-                f"! hard rate limit (daily quota, not transient) hit on page {i}/{len(pages_to_judge)}: "
-                f"{exc}\n  stopping here rather than retrying every remaining page -- "
-                f"{len(ranked)} result(s) already found are checkpointed and returned as-is"
-            )
-            print(stop_msg, flush=True)
-            if on_progress:
-                on_progress(stop_msg)
+
+        judgment = None
+        while True:
+            try:
+                judgment = judge_fn(page, product, country)
+                break
+            except HardRateLimitError as exc:
+                new_judge_fn = next_judge_fn() if next_judge_fn is not None else None
+                if new_judge_fn is not None:
+                    judge_fn = new_judge_fn
+                    rotate_msg = (
+                        f"  ! hard rate limit (daily quota) hit on this key; switching to "
+                        f"the next API key and retrying this page"
+                    )
+                    print(rotate_msg, flush=True)
+                    if on_progress:
+                        on_progress(rotate_msg)
+                    continue
+                stop_msg = (
+                    f"! hard rate limit (daily quota, not transient) hit on page {i}/{len(pages_to_judge)}"
+                    f"{' -- no more API keys to switch to' if next_judge_fn is not None else ''}: {exc}\n"
+                    f"  stopping here rather than retrying every remaining page -- "
+                    f"{len(ranked)} result(s) already found are checkpointed and returned as-is"
+                )
+                print(stop_msg, flush=True)
+                if on_progress:
+                    on_progress(stop_msg)
+                give_up = True
+                break
+        if give_up:
             break
         if judgment is None:
             time.sleep(delay_seconds)

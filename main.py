@@ -95,13 +95,16 @@ def run_pipeline(
             save_json(scraped_path, scraped_dicts)
         print(f"Added {len(new_candidates_only)} new leads -> {candidates_path}, {scraped_path}")
 
-    print(f"\n=== Phase 4: Ranking (provider={provider}, model={model}) ===")
-    judge_fn = rnk.build_judge_fn(provider, model, api_key)
+    api_keys = rnk.parse_api_keys(api_key)
+    print(f"\n=== Phase 4: Ranking (provider={provider}, model={model}"
+          f"{f', {len(api_keys)} API keys for rotation' if len(api_keys) > 1 else ''}) ===")
+    judge_fn, next_judge_fn = rnk.build_key_rotator(provider, model, api_keys)
     results_path = DATA_DIR / f"results_{slug}.json"
     ranked = rc.rank_companies(
         scraped_dicts, product=product, country=country, judge_fn=judge_fn,
         top_n=top_n, min_score=min_score, delay_seconds=delay,
         checkpoint_path=results_path,  # saved after every qualifying result, not just at the end
+        next_judge_fn=next_judge_fn,
     )
     rc.save_ranked(ranked, results_path)
     ranked_dicts = [c.model_dump() for c in ranked]
@@ -129,7 +132,10 @@ def main() -> None:
                          help="LLM provider for ranking (and localization/directory mining "
                               "if enabled). Default: groq (free).")
     parser.add_argument("--model", default=None, help="Defaults to the provider's default model")
-    parser.add_argument("--api-key", default=None, help="Defaults to the provider's env var")
+    parser.add_argument("--api-key", default=None,
+                         help="Defaults to the provider's env var. Accepts a comma-separated "
+                              "list of keys for round-robin rotation when one key's daily "
+                              "quota runs out mid-run, e.g. 'key1,key2'.")
     parser.add_argument("--top-n", type=int, default=10)
     parser.add_argument("--min-score", type=int, default=40)
     parser.add_argument("--max-per-query", type=int, default=8)
