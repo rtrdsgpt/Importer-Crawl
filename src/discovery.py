@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+import requests
 from ddgs import DDGS
 from ddgs.exceptions import DDGSException
 from dotenv import load_dotenv
@@ -163,6 +164,15 @@ Give bare domains only (e.g. "example.com"), no URLs. If you don't know \
 of any directory genuinely relevant to {country}, return an empty list \
 rather than guessing a generic one.
 
+3. If you know a plausible HS (Harmonized System) customs classification \
+code for "{product}" -- even just the 4-6 digit heading, not full \
+precision -- include ONE extra query in the "queries" list built around \
+it (e.g. "HS code 6907 ceramic tiles importers {country}" or "HS 090230 \
+import data {country}"). Customs/trade-statistics sites index by HS code \
+rather than product name, so this can surface real importer records a \
+name-only search misses entirely. Skip this if you're not reasonably \
+confident of the code -- a wrong code is worse than no query.
+
 Respond with ONLY a JSON object, no markdown fences, no commentary:
 {{"queries": ["query one", "query two", ...], "directories": ["example.com", ...]}}
 """
@@ -186,7 +196,7 @@ def generate_localized_queries(
 
     Best-effort: returns [] if the chosen provider's API key isn't set or
     the call fails, so discovery still works without either. Uses
-    rank_engine.get_raw_completion(), so any of the 5 providers supported
+    rank_engine.get_raw_completion(), so any of the 6 providers supported
     for ranking works here too -- one provider config for the whole
     pipeline, not a separate constrained set for auxiliary steps.
     """
@@ -196,7 +206,7 @@ def generate_localized_queries(
     # Only the first key -- the env var may hold a comma-separated list for
     # rank_companies()'s key-rotation, but this is a single best-effort call,
     # not worth the complexity of rotating here too.
-    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]))
+    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]) or config.get("placeholder_key"))
     if not api_keys:
         print(f"  ! no {config['env_var']} found; skipping localized queries")
         return []
@@ -254,6 +264,11 @@ product category in or near {country}
 specific to {country} (not global generic ones)
 - Buyer-side phrasing not yet tried (e.g. procurement, sourcing, tender, \
 wholesale purchase, stockist)
+- If you're reasonably confident of an HS (Harmonized System) customs code \
+for "{product}" and no prior query used one, a query built around it (e.g. \
+"HS code 6907 import statistics {country}") -- customs/trade-data sites \
+index by code, not product name, and are a different source entirely from \
+a company-name search. Skip this angle if unsure of the code.
 
 Respond with ONLY a JSON array of {n} strings, no markdown fences, no \
 commentary.
@@ -273,7 +288,7 @@ def generate_supplementary_queries(
     import rank_engine as rnk
 
     config = rnk.PROVIDER_CONFIGS[provider]
-    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]))
+    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]) or config.get("placeholder_key"))
     if not api_keys:
         print(f"  ! no {config['env_var']} found; skipping supplementary queries")
         return []
@@ -467,6 +482,8 @@ def save_candidates(candidates: list[Candidate], output_path: Path) -> None:
 
 
 def main() -> None:
+    import rank_engine as rnk  # local import: avoids loading every provider SDK
+
     parser = argparse.ArgumentParser(description="Discover candidate importer URLs.")
     parser.add_argument("--product", required=True, help='e.g. "Ceramic Tiles"')
     parser.add_argument("--country", required=True, help='e.g. "Germany"')
@@ -480,7 +497,7 @@ def main() -> None:
                          help="Also generate search queries in the target country's business "
                               "language via an LLM (see --localize-provider).")
     parser.add_argument("--localize-provider", default="groq",
-                         choices=["hf", "openai", "groq", "gemini", "claude"],
+                         choices=list(rnk.PROVIDER_CONFIGS),
                          help="Which provider to use for --localize (default: groq).")
     parser.add_argument("--min-candidates", type=int, default=0,
                          help="If the initial search yields fewer than this many genuine "

@@ -2,16 +2,27 @@
 Phase 4: LLM Reasoning, Filtering & Ranking.
 
 Single entry point for every supported LLM provider -- pick one with
---provider. Groq, Gemini, and OpenAI all speak the OpenAI-compatible
-chat-completions format, so they share one client-construction + retry
-path (judge_openai_compatible); Claude and Hugging Face each need their
-own SDK and get their own judge function. Every provider shares the same
-prompt, schema, and hallucination-guard logic in rank_schema.py.
+--provider. Groq, Gemini, OpenAI, and Ollama (a local model server) all
+speak the OpenAI-compatible chat-completions format, so they share one
+client-construction + retry path (judge_openai_compatible); Claude and
+Hugging Face each need their own SDK and get their own judge function.
+Every provider shares the same prompt, schema, and hallucination-guard
+logic in rank_schema.py.
+
+Ollama needs no API key (it's a local server) -- install it, run
+`ollama serve`, `ollama pull llama3.1:8b` (or override --model), then
+--provider ollama. No rate limits, no daily quota, no cost, unlimited
+volume; the tradeoff is your own machine supplies the compute and a
+7-8B local model won't match a hosted frontier model's judgment quality.
 
 Usage:
     export GROQ_API_KEY=gsk_...   # or OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / HF_TOKEN
     python src/rank_engine.py --input data/scraped_ceramic_tiles_germany.json \\
         --product "Ceramic Tiles" --country "Germany" --provider groq
+
+    # or fully offline, no key needed:
+    python src/rank_engine.py --input data/scraped_ceramic_tiles_germany.json \\
+        --product "Ceramic Tiles" --country "Germany" --provider ollama
 """
 
 from __future__ import annotations
@@ -67,7 +78,32 @@ PROVIDER_CONFIGS = {
     },
     "hf": {
         "kind": "hf", "env_var": "HF_TOKEN",
-        "default_model": "Qwen/Qwen2.5-7B-Instruct", "max_tokens": 500,
+        # Qwen2.5-7B-Instruct (the prior default) now 400s with "not
+        # supported by any provider you have enabled" -- HF's Inference
+        # Providers routing dropped free-tier serverless support for it.
+        # Verified directly: querying HfApi().list_models(inference_provider=
+        # "all") and probing candidates live, Llama-3.1-8B-Instruct is the
+        # one that actually returns real (non-empty) content on this token's
+        # enabled providers -- a couple of others (gpt-oss-20b, Qwen3-8B,
+        # GLM-4.7-Flash) returned HTTP 200 with empty content, likely the
+        # same hidden-reasoning-tokens-eat-max_tokens issue seen on Groq's
+        # gpt-oss-120b elsewhere in this file.
+        "default_model": "meta-llama/Llama-3.1-8B-Instruct", "max_tokens": 500,
+    },
+    "ollama": {
+        "kind": "openai_compatible", "env_var": "OLLAMA_API_KEY",
+        "base_url": "http://localhost:11434/v1",
+        # Ollama's OpenAI-compatible endpoint (docs.ollama.com/api/
+        # openai-compatibility) requires *a* non-empty api_key string --
+        # its own docs list it as "required but ignored" -- there's no
+        # real auth for a local server. placeholder_key (see
+        # resolve_api_key() below) lets every "if not api_key: error out"
+        # check elsewhere in the pipeline fall back to this instead of
+        # demanding a credential that doesn't exist for local use. No rate
+        # limits, no daily quota, no cost -- the tradeoff is you supply the
+        # compute and must `ollama pull` the model yourself first.
+        "default_model": "llama3.1:8b", "max_tokens": 500,
+        "placeholder_key": "ollama",
     },
 }
 
@@ -89,7 +125,7 @@ def get_raw_completion(
     provider: str, model: str | None, api_key: str,
     system_prompt: str, user_prompt: str, max_tokens: int = 2048, temperature: float = 0.3,
 ) -> str | None:
-    """Generic single-turn, no-retry completion across all 5 providers, for
+    """Generic single-turn, no-retry completion across all 6 providers, for
     callers that just need raw text back rather than the full ranking
     schema+retry treatment below -- e.g. discovery.py's query localization
     and mine_directories.py's directory name extraction. This is what makes
@@ -352,7 +388,9 @@ def main() -> None:
 
     config = PROVIDER_CONFIGS[args.provider]
     model = args.model or config["default_model"]
-    api_keys = parse_api_keys(args.api_key or os.environ.get(config["env_var"]))
+    api_keys = parse_api_keys(
+        args.api_key or os.environ.get(config["env_var"]) or config.get("placeholder_key")
+    )
     if not api_keys:
         raise SystemExit(
             f"No API key found for provider {args.provider!r}. "
