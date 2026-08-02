@@ -1,0 +1,170 @@
+[
+  {
+    "company_name": "NSL Group",
+    "website": "https://www.nslgroup.co.uk/",
+    "relevance_score": 91,
+    "match_reason": "The company explicitly states it is a 'Pharmaceutical Wholesaler & distributor' and supplies products to various entities including pharmacies, wholesalers, distributors, hospitals, and care homes. Its focus is on introducing pharmaceutical products into the UK medicines supply chain, confirming its role as a major player in the UK market.",
+    "contact_email": "info@nslgroup.co.uk",
+    "contact_phone": null,
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.nslgroup.co.uk/",
+      ""
+    ],
+    "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": true,
+      "text_mentions_country": true,
+      "found_on_map": false
+    },
+    "validation_confidence": "2/3"
+  },
+  {
+    "company_name": "Clydesdale Pharma Ltd",
+    "website": "https://www.clydesdalepharma.com/suppliers",
+    "relevance_score": 91,
+    "match_reason": "The company explicitly identifies itself as a 'Pharmaceutical wholesaler' and is located in the United Kingdom. Furthermore, the page content states that Clydesdale Pharma is looking to partner with suppliers who wish to supply their pharmaceutical products, confirming its role as a buyer/wholesaler sourcing goods.",
+    "contact_email": "contact@clydesdalepharma.com",
+    "contact_phone": "+44(0)20 3904 4452",
+    "contact_linkedin": "https://www.linkedin.com/company/clydesdale-pharma/ ",
+    "sources_used": [
+      "https://www.clydesdalepharma.com/suppliers",
+      ""
+    ],
+    "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": true,
+      "domain_tld": false,
+      "text_mentions_country": true,
+      "found_on_map": false
+    },
+    "validation_confidence": "2/4"
+  },
+  {
+    "company_name": "Nelson Pharmaceuticals",
+    "website": "https://nelsonpharma.co.uk/",
+    "relevance_score": 91,
+    "match_reason": "The company explicitly states its role is 'UK Pharmaceutical Import & Distribution' and describes services like importing and distributing high-quality medicines. While they act as a buyer/importer from manufacturers, their primary function described on the page is distribution to healthcare providers in the UK.",
+    "contact_email": "enquiries@nelsonpharma.com",
+    "contact_phone": null,
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://nelsonpharma.co.uk/",
+      ""
+    ],
+    "company_role": "distributor",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": true,
+      "text_mentions_country": true,
+      "found_on_map": false
+    },
+    "validation_confidence": "2/3"
+  },
+  {
+    "company_name": "ClarusONE",
+    "website": "https://www.clarusonesourcing.com/copy-of-director-supplier-relations",
+    "relevance_score": 85,
+    "match_reason": "The company explicitly discusses 'Generic Pharmaceutical Sourcing Team' and the objective to 'effectively reduce pharmaceutical acquisition costs,' confirming a buying role. The text details responsibilities like supporting 'supplier negotiations' and managing 'buy-side initiatives,' which are core functions of an importer or buyer.",
+    "contact_email": "Suzanne.Tomlinson@clarusonesourcing.com",
+    "contact_phone": null,
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.clarusonesourcing.com/copy-of-director-supplier-relations",
+      ""
+    ],
+    "company_role": "buyer",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": false,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "0/3"
+  },
+  {
+    "company_name": "Firstline Pharma",
+    "website": "https://www.firstlinepharma.co.uk/",
+    "relevance_score": 71,
+    "match_reason": "The company explicitly calls itself a 'Pharmaceutical Wholesaler UK' and mentions being a 'dynamic, reliable pharmaceutical wholesale distributor'. While they state they 'import and export,' their primary function described is distribution/wholesaling of pharmaceuticals in the UK.",
+    "contact_email": null,
+    "contact_phone": null,
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.firstlinepharma.co.uk/",
+      ""
+    ],
+    "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "1/3"
+  },
+  {
+    "company_name": "Mawdsleys",
+    "website": "https://www.mawdsleys.co.uk/",
+    "relevance_score": 71,
+    "match_reason": "The company explicitly describes itself as the 'UK’s largest independent pharmaceutical distributor' and a 'Pharmaceutical Wholesaler & Distributor (Global)'. While they are clearly active in the UK and dealing with pharmaceuticals, their stated role is that of a service provider/distributor rather than an end-user buyer for generic drugs.",
+    "contact_email": "info@mawdsleys.co.uk",
+    "contact_phone": "+44 (0)844 736 9016",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.mawdsleys.co.uk/",
+      ""
+    ],
+    "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": true,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": true
+    },
+    "validation_confidence": "3/4"
+  },
+  {
+    "company_name": "Red Oak Sourcing",
+    "website": "https://redoaksourcing.com/your-opportunity/career-opportunities-2/",
+    "relevance_score": 71,
+    "match_reason": "The company explicitly states it is focused on the 'pharmaceutical purchasing market' and its work supports 'generic pharmaceutical sourcing.' While they are hiring for roles that interact with suppliers (like sourcers), their core function described here positions them as a buyer/purchasing entity rather than a manufacturer or seller.",
+    "contact_email": "careers@redoaksourcing.com",
+    "contact_phone": null,
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://redoaksourcing.com/your-opportunity/career-opportunities-2/",
+      ""
+    ],
+    "company_role": "buyer",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": false,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "0/3"
+  },
+  {
+    "company_name": "Noble Healthcare",
+    "website": "https://noblehc.co.uk/",
+    "relevance_score": 71,
+    "match_reason": "The company explicitly describes itself as a 'Pharmaceutical Wholesaler & Distributor' and states they supply products including 'Generics' to various customers like Pharmacies and Hospitals within the UK. While they are clearly active in the UK pharmaceutical sector, their stated role is supplying/distributing (a seller), not purchasing from an Indian exporter.",
+    "contact_email": null,
+    "contact_phone": null,
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://noblehc.co.uk/",
+      ""
+    ],
+    "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "1/3"
+  }
+]

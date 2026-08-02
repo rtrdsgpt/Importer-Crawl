@@ -1,0 +1,107 @@
+[
+  {
+    "company_name": "GEMSMETAL",
+    "website": "https://gemsmetalcommodities.com/",
+    "relevance_score": 85,
+    "match_reason": "The company explicitly states it specializes in the 'trading and distribution' of precious metals & pearls, including 'Pearl & Precious Gem Trading' and 'Jewelry Trading.' It is physically located in Dubai, United Arab Emirates, making it a relevant trading partner for an Indian exporter.",
+    "contact_email": "ops@gemsmetalcommodities.com",
+    "contact_phone": null,
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://gemsmetalcommodities.com/",
+      ""
+    ],
+    "company_role": "trading_company",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": false,
+      "text_mentions_country": true,
+      "found_on_map": false
+    },
+    "validation_confidence": "1/3"
+  },
+  {
+    "company_name": "Coral Gold Jewellers Trading",
+    "website": "https://www.yello.ae/company/192341/coral-gold-jewellers-trading",
+    "relevance_score": 51,
+    "match_reason": "The company name and listing are centered around 'Jewellery' in Sharjah, UAE. While the page does not explicitly state if they buy or sell gems/jewellery, their name suggests a trading function which is plausible for an importer/distributor role.",
+    "contact_email": null,
+    "contact_phone": "+971 6 567 6380",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.yello.ae/company/192341/coral-gold-jewellers-trading",
+      ""
+    ],
+    "company_role": "trading_company",
+    "country_signals": {
+      "phone_country_code": true,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "2/4"
+  },
+  {
+    "company_name": "Kraft Gems Jewelry Trading LLC",
+    "website": "https://ae.linkedin.com/in/jayesh-yadav-47750452",
+    "relevance_score": 51,
+    "match_reason": "The search snippet identifies the company as 'Kraft Gems Jewelry Trading LLC' located in Dubai, United Arab Emirates. The mention of 'Gems' and 'Jewelry Trading' suggests involvement with the product category, but the role (buyer vs. seller) is not explicitly stated. This judgment relies solely on a thin LinkedIn search snippet.",
+    "contact_email": null,
+    "contact_phone": null,
+    "contact_linkedin": "https://ae.linkedin.com/in/jayesh-yadav-47750452",
+    "sources_used": [
+      "https://ae.linkedin.com/in/jayesh-yadav-47750452",
+      ""
+    ],
+    "company_role": "trading_company",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": false,
+      "text_mentions_country": true,
+      "found_on_map": false
+    },
+    "validation_confidence": "1/3"
+  },
+  {
+    "company_name": "ORIENTAL GOLD AND GEMSTONE TRADING LLC",
+    "website": "https://ae.linkedin.com/company/orientalgold",
+    "relevance_score": 51,
+    "match_reason": "The company name includes 'GEMSTONE TRADING LLC' and the search snippet mentions trading commodities in gold. While this suggests involvement with gems/gold in the UAE, the language is general ('Import gold from Ghana to UAE Trading commodities...') and does not explicitly confirm a buyer role for an Indian exporter of Gems & Jewellery. This judgment is based only on a LinkedIn search snippet.",
+    "contact_email": null,
+    "contact_phone": null,
+    "contact_linkedin": "https://ae.linkedin.com/company/orientalgold",
+    "sources_used": [
+      "https://ae.linkedin.com/company/orientalgold",
+      ""
+    ],
+    "company_role": "trading_company",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": false,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "0/3"
+  },
+  {
+    "company_name": "Flashy Jewellery LLC",
+    "website": "https://ae.linkedin.com/company/flashyjewelleryllc",
+    "relevance_score": 51,
+    "match_reason": "The company operates in the UAE jewellery industry and describes itself as a 'store' experience. While this suggests retail sales (a buyer/end-user), the evidence is limited to a search snippet from LinkedIn, making it difficult to confirm if they are sourcing goods or merely selling finished items.",
+    "contact_email": null,
+    "contact_phone": null,
+    "contact_linkedin": "https://ae.linkedin.com/company/flashyjewelleryllc",
+    "sources_used": [
+      "https://ae.linkedin.com/company/flashyjewelleryllc",
+      ""
+    ],
+    "company_role": "buyer",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": false,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "0/3"
+  }
+]
