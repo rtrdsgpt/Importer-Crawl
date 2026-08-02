@@ -35,7 +35,11 @@ For each company found, the pipeline returns:
 
 **Prerequisites:** Python 3.11+, and at least one LLM provider API key —
 the Groq and Google Gemini free tiers are enough to run the whole pipeline
-at no cost.
+at no cost. Alternatively, `--provider ollama` needs no key at all: install
+[Ollama](https://ollama.com), run `ollama serve`, pull a model
+(`ollama pull llama3.1:8b`), and rank with unlimited local volume — no
+rate limits, no daily quota, no cost, at the expense of your own machine's
+compute and a smaller model's judgment quality vs. a hosted one.
 
 ```bash
 python3 -m venv venv
@@ -56,6 +60,7 @@ OPENAI_API_KEY=...        # https://platform.openai.com/api-keys
 ANTHROPIC_API_KEY=...     # https://console.anthropic.com
 GEMINI_API_KEY=...        # https://aistudio.google.com/apikey (free)
 GROQ_API_KEY=...          # https://console.groq.com/keys (free)
+# --provider ollama needs no key -- just a local `ollama serve` running.
 ```
 
 The optional localized-query generation and directory-mining steps use
@@ -96,21 +101,21 @@ already-scraped data with a different provider without re-scraping).
 
 ```bash
 # Phase 1: Discovery (add --localize for target-language queries; --localize-provider
-# defaults to groq, also accepts hf/openai/gemini/claude)
+# defaults to groq, also accepts hf/openai/gemini/claude/ollama)
 python src/discovery.py --product "Ceramic Tiles" --country "Germany" --localize
 
 # Phase 2: Scraping
 python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
 
 # Phase 3 (optional): Directory & report lead mining -- then re-run Phase 2 to scrape the new leads
-# (--provider defaults to groq, also accepts hf/openai/gemini/claude)
+# (--provider defaults to groq, also accepts hf/openai/gemini/claude/ollama)
 python src/mine_directories.py \
     --candidates data/candidates_ceramic_tiles_germany.json \
     --scraped data/scraped_ceramic_tiles_germany.json \
     --product "Ceramic Tiles" --country "Germany"
 python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
 
-# Phase 4: Ranking (--provider: hf, openai, groq, gemini, or claude)
+# Phase 4: Ranking (--provider: hf, openai, groq, gemini, claude, or ollama)
 python src/rank_engine.py --input data/scraped_ceramic_tiles_germany.json \
     --product "Ceramic Tiles" --country "Germany" --provider groq --top-n 10 --min-score 40
 
@@ -146,7 +151,7 @@ Phase 3 (optional)
         |   back into Phase 2)
         v
 Phase 4  rank_engine.py       --> data/results_<product>_<country>.json
-        |  --provider {hf,openai,groq,gemini,claude}
+        |  --provider {hf,openai,groq,gemini,claude,ollama}
         |  (LLM judges genuine-importer role + relevance score per company;
         |   checkpointed to disk after every qualifying result, not just
         |   at the end)
@@ -170,7 +175,7 @@ main.py (CLI) or app.py (Streamlit)
 | `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, Jina Reader fallback for JS-heavy/non-HTML pages, robots.txt enforcement, contact extraction |
 | `src/mine_directories.py` | 3 (optional) | LLM extraction of company names from directory and market-research-report pages, follow-up search per name |
 | `src/rank_schema.py` | 4 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting/checkpointing — used by every provider |
-| `src/rank_engine.py` | 4 | Single CLI (`--provider {hf,openai,groq,gemini,claude}`) dispatching to the right SDK (OpenAI-compatible client for OpenAI/Groq/Gemini, `anthropic` for Claude, `huggingface_hub` for HF), sharing `rank_schema.py` |
+| `src/rank_engine.py` | 4 | Single CLI (`--provider {hf,openai,groq,gemini,claude,ollama}`) dispatching to the right SDK (OpenAI-compatible client for OpenAI/Groq/Gemini/Ollama, `anthropic` for Claude, `huggingface_hub` for HF), sharing `rank_schema.py` |
 | `src/validate.py` | 5 (optional) | Deterministic country-presence signals (phone code, TLD, text mention, free OSM geocoding) |
 
 ---
@@ -187,11 +192,17 @@ for the common "just run the whole thing" case.
 **Multiple LLM providers behind a shared interface.** `rank_schema.py`
 holds the prompt, the Pydantic output schema, the hallucination guard, and
 the ranking/filtering logic once; `rank_engine.py` picks a `--provider`
-(`hf`, `openai`, `groq`, `gemini`, `claude`) and dispatches to the right
-SDK — an OpenAI-compatible client for OpenAI/Groq/Gemini, `anthropic` for
-Claude, `huggingface_hub` for HF — reusing the same prompt/schema either
-way. `rank_engine.get_raw_completion()` exposes the same 5-provider dispatch
-as a generic text-completion call, so the auxiliary steps (query
+(`hf`, `openai`, `groq`, `gemini`, `claude`, `ollama`) and dispatches to
+the right SDK — an OpenAI-compatible client for OpenAI/Groq/Gemini/Ollama,
+`anthropic` for Claude, `huggingface_hub` for HF — reusing the same
+prompt/schema either way. `ollama` needs no API key at all: it's a local
+model server (`ollama serve` + `ollama pull <model>`) that happens to
+speak the same OpenAI-compatible chat-completions format, so it drops
+into the exact same code path as the cloud providers — unlimited local
+volume with no rate limits or daily quota, at the cost of your own
+machine's compute and a smaller model's judgment quality vs. a hosted
+one. `rank_engine.get_raw_completion()` exposes the same 6-provider
+dispatch as a generic text-completion call, so the auxiliary steps (query
 localization in `discovery.py`, directory-name extraction in
 `mine_directories.py`) support the exact same provider set as ranking —
 one provider choice covers the whole pipeline, not a separate constrained
@@ -200,8 +211,9 @@ development the free Hugging Face tier ran out of credits and its 7B
 model confidently misclassified a German tile *manufacturer*
 (`agrob-buchtal.de`) as a "buyer" at relevance score 85, which is exactly
 the class of error the ranking stage exists to prevent. Being able to
-switch providers (Groq's `openai/gpt-oss-120b`, Gemini, Claude, OpenAI)
-without rewriting the pipeline logic was essential, not a nice-to-have.
+switch providers (Groq's `openai/gpt-oss-120b`, Gemini, Claude, OpenAI,
+or a local Ollama model) without rewriting the pipeline logic was
+essential, not a nice-to-have.
 
 **Incremental checkpointing, not save-at-the-end.** Phase 4 ranking can run
 for hours across hundreds of pages, and a single provider outage,

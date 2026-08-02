@@ -93,7 +93,7 @@ def extract_company_names(
     import rank_engine as rnk
 
     config = rnk.PROVIDER_CONFIGS[provider]
-    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]))
+    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]) or config.get("placeholder_key"))
     if not api_keys:
         print(f"  ! no {config['env_var']} found; skipping directory/report mining")
         return []
@@ -169,6 +169,8 @@ def mine_leads(
 
 
 def main() -> None:
+    import rank_engine as rnk  # local import: avoids loading every provider SDK
+
     parser = argparse.ArgumentParser(
         description="Mine company leads from scraped directory and market research report pages.")
     parser.add_argument("--candidates", required=True, help="Path to candidates_*.json (updated in place)")
@@ -178,7 +180,7 @@ def main() -> None:
     parser.add_argument("--max-per-query", type=int, default=3)
     parser.add_argument("--delay", type=float, default=1.0)
     parser.add_argument("--provider", default="groq",
-                         choices=["hf", "openai", "groq", "gemini", "claude"],
+                         choices=list(rnk.PROVIDER_CONFIGS),
                          help="Which provider to use for name extraction (default: groq).")
     parser.add_argument("--model", default=None, help="Defaults to the provider's default model")
     args = parser.parse_args()

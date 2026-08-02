@@ -44,6 +44,7 @@ PROVIDER_LABELS = {
     "openai": "OpenAI",
     "claude": "Anthropic Claude",
     "hf": "Hugging Face (free, weaker reasoning)",
+    "ollama": "Ollama (offline, local, unlimited)",
 }
 LABEL_TO_PROVIDER = {v: k for k, v in PROVIDER_LABELS.items()}
 
@@ -313,7 +314,15 @@ def main() -> None:
         provider_label = st.selectbox("Provider", list(PROVIDER_LABELS.values()))
         provider_config = rnk.PROVIDER_CONFIGS[LABEL_TO_PROVIDER[provider_label]]
         model = st.text_input("Model", value=provider_config["default_model"])
-        default_key = os.environ.get(provider_config["env_var"], "")
+        default_key = (
+            os.environ.get(provider_config["env_var"], "") or provider_config.get("placeholder_key", "")
+        )
+        if provider_config.get("placeholder_key"):
+            st.caption(
+                "Ollama runs locally and needs no real key -- make sure "
+                f"`ollama serve` is running and you've run `ollama pull {provider_config['default_model']}` "
+                "(or whatever --model you set) first."
+            )
         api_key = st.text_input(
             f"{provider_config['env_var']}", value=default_key, type="password",
             help="Pre-filled from your local .env if present. Accepts a comma-separated list "

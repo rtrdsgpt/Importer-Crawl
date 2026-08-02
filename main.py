@@ -163,7 +163,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = rnk.PROVIDER_CONFIGS[args.provider]
-    api_key = args.api_key or os.environ.get(config["env_var"])
+    api_key = args.api_key or os.environ.get(config["env_var"]) or config.get("placeholder_key")
     if not api_key:
         raise SystemExit(
             f"No API key found for provider {args.provider!r}. "
