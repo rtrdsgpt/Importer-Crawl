@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import time
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
@@ -300,6 +301,37 @@ def build_judge_fn(provider: str, model: str, api_key: str):
     raise ValueError(f"unknown provider kind: {config['kind']}")
 
 
+def parse_api_keys(raw: str | None) -> list[str]:
+    """Splits a comma-separated key list into individual keys, e.g.
+    GROQ_API_KEY="gsk_abc,gsk_def" in .env for round-robin key rotation
+    when one key's daily quota runs out (free-tier daily quotas are the
+    single biggest practical constraint on a long discovery run). A
+    single key with no comma still works exactly as before."""
+    if not raw:
+        return []
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+def build_key_rotator(provider: str, model: str, api_keys: list[str]):
+    """Returns (initial judge_fn, next_judge_fn). Call next_judge_fn() to
+    build a fresh judge_fn for the next key in api_keys, or None once every
+    key has been tried -- rank_companies() calls this when a judge_fn raises
+    HardRateLimitError, so a run keeps going on the next key instead of
+    stopping the moment one key's daily quota is exhausted. With a single
+    key, next_judge_fn() always returns None immediately, so this is a
+    no-op superset of the old single-key behavior."""
+    state = {"idx": 0}
+
+    def next_judge_fn():
+        state["idx"] += 1
+        if state["idx"] >= len(api_keys):
+            return None
+        print(f"  switching to API key #{state['idx'] + 1}/{len(api_keys)}")
+        return build_judge_fn(provider, model, api_keys[state["idx"]])
+
+    return build_judge_fn(provider, model, api_keys[0]), next_judge_fn
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rank scraped companies by relevance via an LLM.")
     parser.add_argument("--input", required=True, help="Path to scraped_*.json from scraper.py")
@@ -311,15 +343,17 @@ def main() -> None:
     parser.add_argument("--min-score", type=int, default=40, help="Minimum relevance score to keep")
     parser.add_argument("--model", default=None, help="Defaults to the provider's default model")
     parser.add_argument("--api-key", default=None,
-                         help="Defaults to the provider's env var (see --help per provider below)")
+                         help="Defaults to the provider's env var (see --help per provider below). "
+                              "Accepts a comma-separated list of keys for round-robin rotation when "
+                              "one key's daily quota runs out, e.g. 'key1,key2'.")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay between LLM calls (s)")
     parser.add_argument("--output", default=None, help="Output JSON path")
     args = parser.parse_args()
 
     config = PROVIDER_CONFIGS[args.provider]
     model = args.model or config["default_model"]
-    api_key = args.api_key or os.environ.get(config["env_var"])
-    if not api_key:
+    api_keys = parse_api_keys(args.api_key or os.environ.get(config["env_var"]))
+    if not api_keys:
         raise SystemExit(
             f"No API key found for provider {args.provider!r}. "
             f"Set {config['env_var']} in your environment or .env, or pass --api-key."
@@ -329,12 +363,12 @@ def main() -> None:
     pages = json.loads(input_path.read_text(encoding="utf-8"))
     output_path = rc.default_output_path(input_path, args.output)
 
-    judge_fn = build_judge_fn(args.provider, model, api_key)
+    judge_fn, next_judge_fn = build_key_rotator(args.provider, model, api_keys)
 
     ranked = rc.rank_companies(
         pages, product=args.product, country=args.country, judge_fn=judge_fn,
         top_n=args.top_n, min_score=args.min_score, delay_seconds=args.delay,
-        checkpoint_path=output_path,
+        checkpoint_path=output_path, next_judge_fn=next_judge_fn,
     )
     rc.save_ranked(ranked, output_path)
     rc.print_summary(ranked, args.min_score, output_path)

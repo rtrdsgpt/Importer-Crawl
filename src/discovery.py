@@ -193,10 +193,14 @@ def generate_localized_queries(
     import rank_engine as rnk
 
     config = rnk.PROVIDER_CONFIGS[provider]
-    api_key = os.environ.get(config["env_var"])
-    if not api_key:
+    # Only the first key -- the env var may hold a comma-separated list for
+    # rank_companies()'s key-rotation, but this is a single best-effort call,
+    # not worth the complexity of rotating here too.
+    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]))
+    if not api_keys:
         print(f"  ! no {config['env_var']} found; skipping localized queries")
         return []
+    api_key = api_keys[0]
 
     content = rnk.get_raw_completion(
         provider, model, api_key, LOCALIZATION_SYSTEM_PROMPT,
@@ -269,10 +273,11 @@ def generate_supplementary_queries(
     import rank_engine as rnk
 
     config = rnk.PROVIDER_CONFIGS[provider]
-    api_key = os.environ.get(config["env_var"])
-    if not api_key:
+    api_keys = rnk.parse_api_keys(os.environ.get(config["env_var"]))
+    if not api_keys:
         print(f"  ! no {config['env_var']} found; skipping supplementary queries")
         return []
+    api_key = api_keys[0]
 
     content = rnk.get_raw_completion(
         provider, model, api_key, SUPPLEMENT_SYSTEM_PROMPT,

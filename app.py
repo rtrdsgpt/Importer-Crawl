@@ -259,11 +259,12 @@ def run_pipeline(
             f"Results save to `{results_path}` after every qualifying company, not just at the "
             f"end -- check that file directly if you want to watch it fill in live."
         )
-        judge_fn = rnk.build_judge_fn(provider, model, api_key)
+        api_keys = rnk.parse_api_keys(api_key)
+        judge_fn, next_judge_fn = rnk.build_key_rotator(provider, model, api_keys)
         ranked = rc.rank_companies(
             scraped_dicts, product=product, country=country, judge_fn=judge_fn,
             top_n=top_n, min_score=min_score, delay_seconds=delay, on_progress=make_progress_logger(status),
-            checkpoint_path=results_path,
+            checkpoint_path=results_path, next_judge_fn=next_judge_fn,
         )
         status.update(label=f"Phase 4 done: {len(ranked)} genuine importers ranked")
     advance_overall("Phase 4 (Ranking) done")
@@ -315,7 +316,9 @@ def main() -> None:
         default_key = os.environ.get(provider_config["env_var"], "")
         api_key = st.text_input(
             f"{provider_config['env_var']}", value=default_key, type="password",
-            help="Pre-filled from your local .env if present.",
+            help="Pre-filled from your local .env if present. Accepts a comma-separated list "
+                 "of keys (e.g. 'key1,key2') to round-robin to the next one if the current key "
+                 "hits its daily quota mid-run, instead of stopping the whole run early.",
         )
 
         st.header("Options")
