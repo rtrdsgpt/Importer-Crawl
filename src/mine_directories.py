@@ -1,19 +1,26 @@
 """
-Phase 3: Directory Lead Mining.
+Phase 3: Directory & Report Lead Mining.
 
-Directory/marketplace pages (europages, kompass, tradewheel, bloombiz, ...)
-get scraped in Phase 2 but discarded at Phase 4 -- the domain itself is
-never a company, so eligible_pages() filters them out. But their scraped
-text often *lists* many real company names as buyers/importers/exhibitors.
+Two kinds of scraped pages get discarded at Phase 4 even though their text
+often *lists* real company names -- the page itself is never a company, so
+eligible_pages() filters both out:
+
+  - Directory/marketplace pages (europages, kompass, tradewheel, bloombiz, ...)
+  - Market research report pages (mordorintelligence, grandviewresearch, ...)
+    -- a report titled "{product} Market in {country}" often names real
+    "key players"/"competitive landscape" companies active in that specific
+    market, which is high-signal since an analyst firm already did the work
+    of identifying who's actually in this market.
+
 This stage:
 
-  1. Asks an LLM to extract company names mentioned in each directory
-     page's text as buyers/importers/distributors of {product} in
+  1. Asks an LLM to extract company names mentioned in each page's text as
+     buyers/importers/distributors/market participants for {product} in
      {country}.
   2. Runs a new, targeted DDGS search per extracted name (via
      discovery.run_queries) to find that company's own website -- the
-     same "search for a canonical source, never trust the directory
-     listing alone" pattern used for LinkedIn URLs.
+     same "search for a canonical source, never trust the listing alone"
+     pattern used for LinkedIn URLs.
   3. Merges the newly found candidates into the existing candidates file.
 
 The new candidates still need to go through scraper.py (to get real
@@ -42,24 +49,29 @@ import discovery as disc
 
 load_dotenv()
 
-MAX_DIRECTORY_PAGES = 15  # bound cost: directory pages can be numerous per run
+MAX_PAGES_TO_MINE = 15  # bound cost: directory/report pages can be numerous per run
 MAX_TEXT_CHARS_IN_PROMPT = 4000
 
 SYSTEM_PROMPT = (
     "You extract real company names from B2B directory/marketplace listing "
-    "pages. You only report names that are explicitly present in the text -- "
-    "you never invent or guess a company name that isn't there."
+    "pages and market research report pages. You only report names that are "
+    "explicitly present in the text -- you never invent or guess a company "
+    "name that isn't there."
 )
 
 USER_PROMPT_TEMPLATE = """\
-The following is scraped text from a B2B directory/marketplace page about \
-"{product}" buyers/importers/distributors in or near "{country}".
+The following is scraped text from a web page -- either a B2B directory/\
+marketplace listing, or a market research report -- about "{product}" \
+buyers/importers/distributors/market participants in or near "{country}".
 
 Extract the names of real, specific companies mentioned in this text as \
-buyers, importers, distributors, or exhibitors of "{product}" -- not the \
-directory site itself, not generic category labels, not manufacturers/\
-exporters being sold to (unless the text is ambiguous about which side \
-they're on, in which case include them and let a later stage judge).
+buyers, importers, distributors, exhibitors, or "key players"/"competitive \
+landscape" participants active in the "{product}" market in or near \
+"{country}" -- not the directory/report publisher itself, not generic \
+category labels, not manufacturers/exporters based elsewhere that are only \
+mentioned as global players with no stated connection to {country} (unless \
+the text is ambiguous about which side they're on or where they operate, \
+in which case include them and let a later stage judge).
 
 TEXT:
 \"\"\"
@@ -72,7 +84,7 @@ no commentary). If no real company names are present, respond with [].
 
 
 def extract_company_names(
-    directory_pages: list[dict], product: str, country: str,
+    pages_to_mine: list[dict], product: str, country: str,
     provider: str = "groq", model: str | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> list[str]:
@@ -83,16 +95,17 @@ def extract_company_names(
     config = rnk.PROVIDER_CONFIGS[provider]
     api_key = os.environ.get(config["env_var"])
     if not api_key:
-        print(f"  ! no {config['env_var']} found; skipping directory mining")
+        print(f"  ! no {config['env_var']} found; skipping directory/report mining")
         return []
 
     names: set[str] = set()
-    pages = directory_pages[:MAX_DIRECTORY_PAGES]
+    pages = pages_to_mine[:MAX_PAGES_TO_MINE]
     for i, page in enumerate(pages, start=1):
         text = (page.get("text_content") or "").strip()
         if len(text) < 100:
             continue
-        msg = f"[{i}/{len(pages)}] mining directory page: {page['url']}"
+        kind = "report" if page.get("source_type") == "report" else "directory"
+        msg = f"[{i}/{len(pages)}] mining {kind} page: {page['url']}"
         print(msg, flush=True)
         if on_progress:
             on_progress(msg)
@@ -129,13 +142,14 @@ def mine_leads(
     on_progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """Returns the merged candidate list (original + newly mined), deduped."""
-    directory_pages = [
+    pages_to_mine = [
         p for p in scraped_pages
-        if p.get("source_type") == "directory" and p.get("status") in ("success", "snippet_only")
+        if p.get("source_type") in ("directory", "report")
+        and p.get("status") in ("success", "snippet_only")
     ]
-    print(f"Mining {len(directory_pages)} directory pages for company names...")
+    print(f"Mining {len(pages_to_mine)} directory/report pages for company names...")
     names = extract_company_names(
-        directory_pages, product, country, provider=provider, model=model, on_progress=on_progress,
+        pages_to_mine, product, country, provider=provider, model=model, on_progress=on_progress,
     )
     print(f"\nExtracted {len(names)} candidate company names: {names}")
 
@@ -148,13 +162,14 @@ def mine_leads(
         queries, max_results_per_query=max_results_per_query,
         delay_seconds=delay_seconds, seen_keys=seen_keys, on_progress=on_progress,
     )
-    print(f"\nFound {len(new_candidates)} new candidate URLs from directory mining")
+    print(f"\nFound {len(new_candidates)} new candidate URLs from directory/report mining")
 
     return candidates + [asdict(c) for c in new_candidates]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Mine company leads from scraped directory pages.")
+    parser = argparse.ArgumentParser(
+        description="Mine company leads from scraped directory and market research report pages.")
     parser.add_argument("--candidates", required=True, help="Path to candidates_*.json (updated in place)")
     parser.add_argument("--scraped", required=True, help="Path to scraped_*.json (read-only)")
     parser.add_argument("--product", required=True)

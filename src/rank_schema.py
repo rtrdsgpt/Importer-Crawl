@@ -6,11 +6,12 @@ Anthropic, Hugging Face) and reuses everything else from here: the prompt,
 the pydantic schemas, hallucination-guarded contact validation, and the
 rank/sort/save pipeline.
 
-Only "website" pages that were either fully scraped ("success") or, for
-robots.txt-disallowed pages, have a search-engine snippet ("snippet_only",
-explicitly flagged as low-confidence in the prompt) are evaluated -- we
-don't guess at a company from nothing, since that risks fabricating
-details rather than grounding them in real evidence.
+Only "website" and "social" (LinkedIn/Facebook) pages that were either
+fully scraped ("success") or never fetched but have a search-engine
+snippet ("snippet_only", explicitly flagged as low-confidence in the
+prompt -- covers robots.txt-disallowed pages and social platforms alike)
+are evaluated -- we don't guess at a company from nothing, since that
+risks fabricating details rather than grounding them in real evidence.
 """
 
 from __future__ import annotations
@@ -171,13 +172,29 @@ LINKEDIN_SNIPPET_NOTE = (
     "judgment is based only on a LinkedIn search snippet, not the full page.\n"
 )
 
+FACEBOOK_SNIPPET_NOTE = (
+    "NOTE: This is a Facebook Page or Marketplace listing. Facebook is never "
+    "fetched directly (login-walled, against its ToS to scrape), so all you "
+    "have is the search engine's title and snippet below -- not the actual "
+    "page. Many smaller importers/wholesalers/traders run their primary "
+    "presence entirely on Facebook rather than a dedicated website, so "
+    "don't discount this just because it's a social platform -- but do "
+    "treat it as thin, low-confidence evidence: do not assign a high "
+    "relevance_score on a search snippet alone, and say explicitly in "
+    "match_reason that this judgment is based only on a Facebook search "
+    "snippet, not the full page.\n"
+)
+
 
 def build_prompt(page: dict, product: str, country: str) -> str:
     content_confidence_note = ""
     if page.get("status") == "snippet_only":
-        content_confidence_note = (
-            LINKEDIN_SNIPPET_NOTE if page.get("source_type") == "linkedin" else ROBOTS_SNIPPET_NOTE
-        )
+        if page.get("source_type") == "social":
+            content_confidence_note = (
+                LINKEDIN_SNIPPET_NOTE if "linkedin.com" in page.get("url", "") else FACEBOOK_SNIPPET_NOTE
+            )
+        else:
+            content_confidence_note = ROBOTS_SNIPPET_NOTE
     return USER_PROMPT_TEMPLATE.format(
         product=product,
         country=country,
@@ -198,7 +215,7 @@ def eligible_pages(pages: list[dict]) -> list[dict]:
     return [
         p for p in pages
         if p.get("status") in ("success", "snippet_only")
-        and p.get("source_type") in ("website", "linkedin")
+        and p.get("source_type") in ("website", "social")
     ]
 
 

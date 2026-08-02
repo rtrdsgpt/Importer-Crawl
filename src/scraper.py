@@ -10,8 +10,10 @@ Fallback: Jina Reader (https://r.jina.ai/<url>) when the static fetch comes
 back with too little text -- a cheap way to handle JS-heavy pages without
 pulling in a headless browser.
 
-LinkedIn URLs are never fetched here (see discovery.py) -- they pass through
-untouched so Phase 4 can use them directly as the "Contact LinkedIn" field.
+LinkedIn and Facebook URLs are never fetched here (see discovery.py) --
+their title/snippet from search is kept as low-confidence evidence instead
+(status "snippet_only"), and LinkedIn URLs specifically are also used
+directly as the "Contact LinkedIn" field.
 
 Usage:
     python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
@@ -89,7 +91,7 @@ class ScrapedPage:
     source_type: str
     title: str
     search_snippet: str
-    status: str  # "success" | "failed" | "skipped_linkedin" | "skipped_noise"
+    status: str  # "success" | "failed" | "skipped_social" | "skipped_noise"
                  # | "robots_disallowed" | "snippet_only"
     error: str | None = None
     used_jina_fallback: bool = False
@@ -222,21 +224,24 @@ def scrape_one(candidate: dict, robots: RobotsCache, timeout: float) -> ScrapedP
         status="failed",
     )
 
-    if source_type == "linkedin":
-        # Never fetch LinkedIn itself (ToS) -- but the search engine already
-        # gave us a title/snippet, which is real evidence for a company
-        # whose only meaningful online presence might be its LinkedIn page
-        # (no separate website). Surfacing that as low-confidence evidence
-        # beats silently dropping the company entirely.
+    if source_type == "social":
+        # Never fetch LinkedIn or Facebook directly (login-walled, against
+        # ToS to scrape) -- but the search engine already gave us a title/
+        # snippet, which is real evidence for a company whose primary or
+        # only online presence is a LinkedIn page or Facebook Page/
+        # Marketplace listing (common for smaller importers/wholesalers).
+        # Surfacing that as low-confidence evidence beats silently dropping
+        # the company entirely.
         if base.title or base.search_snippet:
             base.status = "snippet_only"
             base.text_content = (
-                f"[LinkedIn company page title]: {base.title}\n"
-                f"[LinkedIn search snippet]: {base.search_snippet}"
+                f"[Social media business page title]: {base.title}\n"
+                f"[Social media search snippet]: {base.search_snippet}"
             ).strip()
-            base.linkedin_links = [url]
+            if "linkedin.com" in base.domain:
+                base.linkedin_links = [url]
         else:
-            base.status = "skipped_linkedin"
+            base.status = "skipped_social"
         return base
     if source_type == "noise":
         base.status = "skipped_noise"
@@ -326,7 +331,7 @@ def scrape_all(candidates: list[dict], timeout: float = 10.0,
         if on_progress:
             on_progress(status_msg)
         results.append(page)
-        if page.status not in ("skipped_linkedin", "skipped_noise"):
+        if page.status not in ("skipped_social", "skipped_noise"):
             time.sleep(delay_seconds)
     return results
 
