@@ -1,5 +1,5 @@
 """
-Shared logic for Phase 3 (LLM Reasoning, Filtering & Ranking).
+Shared logic for Phase 4 (LLM Reasoning, Filtering & Ranking).
 
 rank_engine.py implements the per-provider API calls (OpenAI-compatible,
 Anthropic, Hugging Face) and reuses everything else from here: the prompt,
@@ -132,6 +132,15 @@ def first_sentence(text: str) -> str:
     return match.group(0).strip() if match else text.strip()
 
 
+class HardRateLimitError(Exception):
+    """Raised by a provider's judge_fn when a rate-limit error looks like a
+    long/daily quota exhaustion (e.g. "tokens per day" limits) rather than a
+    transient per-minute one. Retrying with backoff is pointless when the
+    quota won't clear for minutes to hours -- rank_companies() catches this
+    and stops the whole run early instead of cycling every remaining page
+    through the same futile retries."""
+
+
 def extract_json_object(text: str | None) -> dict:
     if not text:
         raise ValueError("model returned empty content (no text to parse)")
@@ -142,7 +151,7 @@ def extract_json_object(text: str | None) -> dict:
     return json.loads(match.group(0))
 
 
-SNIPPET_ONLY_NOTE = (
+ROBOTS_SNIPPET_NOTE = (
     "NOTE: This page's robots.txt disallows automated access, so it was never "
     "fetched. All you have is the search engine's own title and snippet below "
     "-- not the actual page. Treat this as thin, low-confidence evidence: do "
@@ -151,8 +160,24 @@ SNIPPET_ONLY_NOTE = (
     "snippet, not the full page.\n"
 )
 
+LINKEDIN_SNIPPET_NOTE = (
+    "NOTE: This is a LinkedIn company page. LinkedIn is never fetched directly "
+    "(login-walled, against its ToS to scrape), so all you have is the search "
+    "engine's title and snippet below -- not the actual page. This may be the "
+    "company's only real online presence (no separate website), which is "
+    "itself plausible for a smaller trading/import business. Treat this as "
+    "thin, low-confidence evidence: do not assign a high relevance_score on a "
+    "search snippet alone, and say explicitly in match_reason that this "
+    "judgment is based only on a LinkedIn search snippet, not the full page.\n"
+)
+
 
 def build_prompt(page: dict, product: str, country: str) -> str:
+    content_confidence_note = ""
+    if page.get("status") == "snippet_only":
+        content_confidence_note = (
+            LINKEDIN_SNIPPET_NOTE if page.get("source_type") == "linkedin" else ROBOTS_SNIPPET_NOTE
+        )
     return USER_PROMPT_TEMPLATE.format(
         product=product,
         country=country,
@@ -164,7 +189,7 @@ def build_prompt(page: dict, product: str, country: str) -> str:
         linkedin_links=page.get("linkedin_links") or [],
         query=page.get("query", ""),
         snippet=page.get("search_snippet", ""),
-        content_confidence_note=SNIPPET_ONLY_NOTE if page.get("status") == "snippet_only" else "",
+        content_confidence_note=content_confidence_note,
         text_content=(page.get("text_content") or "")[:MAX_PAGE_CHARS_IN_PROMPT],
     )
 
@@ -172,7 +197,8 @@ def build_prompt(page: dict, product: str, country: str) -> str:
 def eligible_pages(pages: list[dict]) -> list[dict]:
     return [
         p for p in pages
-        if p.get("source_type") == "website" and p.get("status") in ("success", "snippet_only")
+        if p.get("status") in ("success", "snippet_only")
+        and p.get("source_type") in ("website", "linkedin")
     ]
 
 
@@ -237,7 +263,18 @@ def rank_companies(
         print(msg, flush=True)
         if on_progress:
             on_progress(msg)
-        judgment = judge_fn(page, product, country)
+        try:
+            judgment = judge_fn(page, product, country)
+        except HardRateLimitError as exc:
+            stop_msg = (
+                f"! hard rate limit (daily quota, not transient) hit on page {i}/{len(pages_to_judge)}: "
+                f"{exc}\n  stopping here rather than retrying every remaining page -- "
+                f"{len(ranked)} result(s) already found are checkpointed and returned as-is"
+            )
+            print(stop_msg, flush=True)
+            if on_progress:
+                on_progress(stop_msg)
+            break
         if judgment is None:
             time.sleep(delay_seconds)
             continue

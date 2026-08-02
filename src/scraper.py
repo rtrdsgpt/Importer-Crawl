@@ -3,7 +3,7 @@ Phase 2: Web Scraping & Content Extraction.
 
 Reads the candidate URLs produced by discovery.py, fetches each page, and
 extracts clean text plus structured signals (emails, phones, LinkedIn links)
-for the LLM reasoning stage (Phase 3).
+for the LLM reasoning stage (Phase 4).
 
 Primary path: requests + BeautifulSoup (fast, no extra infra).
 Fallback: Jina Reader (https://r.jina.ai/<url>) when the static fetch comes
@@ -11,7 +11,7 @@ back with too little text -- a cheap way to handle JS-heavy pages without
 pulling in a headless browser.
 
 LinkedIn URLs are never fetched here (see discovery.py) -- they pass through
-untouched so Phase 3 can use them directly as the "Contact LinkedIn" field.
+untouched so Phase 4 can use them directly as the "Contact LinkedIn" field.
 
 Usage:
     python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
@@ -223,7 +223,20 @@ def scrape_one(candidate: dict, robots: RobotsCache, timeout: float) -> ScrapedP
     )
 
     if source_type == "linkedin":
-        base.status = "skipped_linkedin"
+        # Never fetch LinkedIn itself (ToS) -- but the search engine already
+        # gave us a title/snippet, which is real evidence for a company
+        # whose only meaningful online presence might be its LinkedIn page
+        # (no separate website). Surfacing that as low-confidence evidence
+        # beats silently dropping the company entirely.
+        if base.title or base.search_snippet:
+            base.status = "snippet_only"
+            base.text_content = (
+                f"[LinkedIn company page title]: {base.title}\n"
+                f"[LinkedIn search snippet]: {base.search_snippet}"
+            ).strip()
+            base.linkedin_links = [url]
+        else:
+            base.status = "skipped_linkedin"
         return base
     if source_type == "noise":
         base.status = "skipped_noise"
@@ -233,9 +246,9 @@ def scrape_one(candidate: dict, robots: RobotsCache, timeout: float) -> ScrapedP
         # We never fetch a robots.txt-disallowed page ourselves -- but the
         # search engine already crawled it under its own identity and gave
         # us a title/snippet in Phase 1. Treating that as thin, low-
-        # confidence evidence (like we do for LinkedIn) is a legitimate,
-        # policy-respecting middle ground between "fetch it anyway" and
-        # "discard everything we know about this candidate".
+        # confidence evidence (like we do for LinkedIn above) is a
+        # legitimate, policy-respecting middle ground between "fetch it
+        # anyway" and "discard everything we know about this candidate".
         if base.title or base.search_snippet:
             base.status = "snippet_only"
             base.text_content = (

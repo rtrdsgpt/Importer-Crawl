@@ -1,8 +1,8 @@
 """
-Phase 2.5: Directory Lead Mining.
+Phase 3: Directory Lead Mining.
 
 Directory/marketplace pages (europages, kompass, tradewheel, bloombiz, ...)
-get scraped in Phase 2 but discarded at Phase 3 -- the domain itself is
+get scraped in Phase 2 but discarded at Phase 4 -- the domain itself is
 never a company, so eligible_pages() filters them out. But their scraped
 text often *lists* many real company names as buyers/importers/exhibitors.
 This stage:
