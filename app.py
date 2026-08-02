@@ -1,5 +1,5 @@
 """
-Phase 4: Interface & Output.
+Phase 6: Interface & Output.
 
 Streamlit dashboard that runs the full pipeline (Discovery -> Scraping ->
 [Directory Mining] -> Ranking -> [Validation]) end-to-end for a given
@@ -7,7 +7,7 @@ product/country, or browses previously saved results without re-running
 anything.
 
 Usage:
-    streamlit run src/app.py
+    streamlit run app.py
 """
 
 from __future__ import annotations
@@ -17,11 +17,14 @@ import io
 import json
 import os
 import re
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
+
+sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 import discovery as disc
 import mine_directories as miner
@@ -32,7 +35,7 @@ import validate as val
 
 load_dotenv()
 
-DATA_DIR = Path("data")
+DATA_DIR = Path(__file__).parent / "data"
 
 # Friendly display labels for rank_engine.py's PROVIDER_CONFIGS keys.
 PROVIDER_LABELS = {
@@ -174,13 +177,22 @@ def run_pipeline(
     candidates_dicts = [asdict(c) for c in candidates]
     candidates_path = DATA_DIR / f"candidates_{slug}.json"
     save_json(candidates_path, candidates_dicts)
+    st.caption(f"Saved {len(candidates_dicts)} candidates to `{candidates_path}` -- available now, "
+               f"don't need to wait for the rest of the pipeline.")
+    st.download_button(
+        f"Download candidates so far ({len(candidates_dicts)})",
+        data=json.dumps(candidates_dicts, indent=2, ensure_ascii=False),
+        file_name="candidates.json", mime="application/json", key="candidates_json_live",
+    )
 
     with st.status("Phase 2: Scraping candidate pages...", expanded=True) as status:
         status.write(
             "Fetching each candidate's page to extract clean text, emails, phones, and "
             "LinkedIn links. Pages disallowed by robots.txt are never fetched -- only their "
             "search-engine snippet is kept, clearly flagged as lower-confidence. LinkedIn "
-            "itself is never scraped at all."
+            "itself is never fetched either (against its ToS), but a company's LinkedIn "
+            "title/snippet is still kept as low-confidence evidence -- useful for a company "
+            "whose only real presence is a LinkedIn page, not a separate website."
         )
         scraped = scr.scrape_all(candidates_dicts, delay_seconds=delay, on_progress=make_progress_logger(status))
         status.update(label=f"Phase 2 done: {len(scraped)} pages scraped")
@@ -188,9 +200,15 @@ def run_pipeline(
     scraped_dicts = [asdict(p) for p in scraped]
     scraped_path = DATA_DIR / f"scraped_{slug}.json"
     save_json(scraped_path, scraped_dicts)
+    st.caption(f"Saved {len(scraped_dicts)} scraped pages to `{scraped_path}` -- available now.")
+    st.download_button(
+        f"Download scraped pages so far ({len(scraped_dicts)})",
+        data=json.dumps(scraped_dicts, indent=2, ensure_ascii=False),
+        file_name="scraped.json", mime="application/json", key="scraped_json_live",
+    )
 
     if mine_dirs:
-        with st.status("Phase 2.5: Mining directory pages for more leads...", expanded=True) as status:
+        with st.status("Phase 3: Mining directory pages for more leads...", expanded=True) as status:
             status.write(
                 f"B2B directory pages (europages, Kompass, etc.) often list many company "
                 f"names in one page. Asking {provider_label} to extract those names, then "
@@ -208,7 +226,7 @@ def run_pipeline(
             # time and LLM-provider quota on pages we already have.
             new_candidates_only = merged_candidates[len(candidates_dicts):]
             new_count = len(new_candidates_only)
-            status.update(label=f"Phase 2.5 done: {new_count} new leads found; scraping those...")
+            status.update(label=f"Phase 3 done: {new_count} new leads found; scraping those...")
             if new_count > 0:
                 newly_scraped = scr.scrape_all(
                     new_candidates_only, delay_seconds=delay, on_progress=make_progress_logger(status),
@@ -217,31 +235,34 @@ def run_pipeline(
                 candidates_dicts = merged_candidates
                 save_json(candidates_path, candidates_dicts)
                 save_json(scraped_path, scraped_dicts)
-            status.update(label=f"Phase 2.5 done: {new_count} new leads added and scraped")
-        advance_overall("Phase 2.5 (Directory Mining) done")
+                status.write(f"Updated `{candidates_path}` and `{scraped_path}` with the new leads.")
+            status.update(label=f"Phase 3 done: {new_count} new leads added and scraped")
+        advance_overall("Phase 3 (Directory Mining) done")
 
-    with st.status(f"Phase 3: Ranking with {provider_label}...", expanded=True) as status:
+    with st.status(f"Phase 4: Ranking with {provider_label}...", expanded=True) as status:
+        results_path = DATA_DIR / f"results_{slug}.json"
         status.write(
             "Asking the LLM to judge each scraped company: is it a genuine importer/"
             "distributor/wholesaler/buyer (not a manufacturer, exporter, or directory), "
             "how relevant is it, and what's the evidence? Contact details the model proposes "
-            "are checked against what was actually found on the page -- nothing invented is kept."
+            "are checked against what was actually found on the page -- nothing invented is kept. "
+            f"Results save to `{results_path}` after every qualifying company, not just at the "
+            f"end -- check that file directly if you want to watch it fill in live."
         )
         judge_fn = rnk.build_judge_fn(provider, model, api_key)
-        results_path = DATA_DIR / f"results_{slug}.json"
         ranked = rc.rank_companies(
             scraped_dicts, product=product, country=country, judge_fn=judge_fn,
             top_n=top_n, min_score=min_score, delay_seconds=delay, on_progress=make_progress_logger(status),
             checkpoint_path=results_path,
         )
-        status.update(label=f"Phase 3 done: {len(ranked)} genuine importers ranked")
-    advance_overall("Phase 3 (Ranking) done")
+        status.update(label=f"Phase 4 done: {len(ranked)} genuine importers ranked")
+    advance_overall("Phase 4 (Ranking) done")
     ranked_dicts = [c.model_dump() for c in ranked]
 
     rc.save_ranked(ranked, results_path)
 
     if validate:
-        with st.status("Phase 3.5: Validating country presence...", expanded=True) as status:
+        with st.status("Phase 5: Validating country presence...", expanded=True) as status:
             status.write(
                 "Layering free, deterministic checks on top of the LLM's judgment: does the "
                 "phone number's country code match, does the domain use the country's TLD, "
@@ -252,8 +273,8 @@ def run_pipeline(
             validated = val.validate_all(
                 ranked_dicts, scraped_dicts, country, use_map_lookup=use_map_lookup, on_progress=make_progress_logger(status),
             )
-            status.update(label=f"Phase 3.5 done: {len(validated)} companies validated")
-        advance_overall("Phase 3.5 (Validation) done")
+            status.update(label=f"Phase 5 done: {len(validated)} companies validated")
+        advance_overall("Phase 5 (Validation) done")
         with (DATA_DIR / f"validated_{slug}.json").open("w", encoding="utf-8") as f:
             json.dump(validated, f, indent=2, ensure_ascii=False)
         final = validated
@@ -354,23 +375,41 @@ def main() -> None:
                 "The pipeline runs in stages, each shown live as it happens: "
                 "**1. Discovery** (web search for candidate companies) -> "
                 "**2. Scraping** (fetch each page, extract contacts) -> "
-                "*2.5. Directory mining* (optional: pull more leads out of B2B directory "
-                "pages) -> **3. Ranking** (an LLM judges genuine-importer role and "
-                "relevance) -> *3.5. Validation* (optional: free country-presence checks). "
+                "*3. Directory mining* (optional: pull more leads out of B2B directory "
+                "pages) -> **4. Ranking** (an LLM judges genuine-importer role and "
+                "relevance) -> *5. Validation* (optional: free country-presence checks). "
                 "Expect this to take a few minutes depending on how many candidates are found."
             )
 
     with tab_browse:
-        st.subheader("Previously saved results")
-        saved_files = sorted(DATA_DIR.glob("validated_*.json")) + sorted(DATA_DIR.glob("results_*.json"))
+        st.subheader("Previously saved files")
+        st.caption(
+            "Every stage's output lands in data/ as it's produced, not just the final "
+            "results -- candidates (Phase 1), scraped pages (Phase 2), and results/"
+            "validated (Phase 4/5) are all browsable here, including from runs that "
+            "didn't finish (checkpointed results survive an interrupted run)."
+        )
+        # Final-results files render as the ranked-company table (render_results);
+        # candidates/scraped have a different schema (Candidate/ScrapedPage, not
+        # RankedCompany) so they get a generic table + JSON download instead.
+        final_files = sorted(DATA_DIR.glob("validated_*.json")) + sorted(DATA_DIR.glob("results_*.json"))
+        raw_files = sorted(DATA_DIR.glob("candidates_*.json")) + sorted(DATA_DIR.glob("scraped_*.json"))
+        saved_files = final_files + raw_files
         if not saved_files:
-            st.info("No saved result files found in data/.")
+            st.info("No saved files found in data/ yet -- run a search first.")
         else:
             chosen = st.selectbox("Choose a saved file", saved_files, format_func=lambda p: p.name)
             if chosen:
-                companies = json.loads(chosen.read_text(encoding="utf-8"))
-                st.caption(f"{len(companies)} companies in {chosen.name}")
-                render_results(companies, key_prefix="browse")
+                data = json.loads(chosen.read_text(encoding="utf-8"))
+                st.caption(f"{len(data)} entries in {chosen.name}")
+                if chosen in final_files:
+                    render_results(data, key_prefix="browse")
+                else:
+                    st.dataframe(data, use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "Download JSON", data=json.dumps(data, indent=2, ensure_ascii=False),
+                        file_name=chosen.name, mime="application/json", key="browse_raw_json",
+                    )
 
 
 if __name__ == "__main__":

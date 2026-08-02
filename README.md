@@ -19,22 +19,114 @@ For each company found, the pipeline returns:
 
 ## Table of Contents
 
+- [Usage](#usage)
 - [Architecture](#architecture)
 - [Design Decisions](#design-decisions)
 - [Data Sources](#data-sources)
 - [Ranking Methodology](#ranking-methodology)
 - [Assumptions & Limitations](#assumptions--limitations)
-- [Setup Instructions](#setup-instructions)
-- [Usage](#usage)
 - [Sample Results](#sample-results)
+
+---
+
+## Usage
+
+### Setup
+
+**Prerequisites:** Python 3.11+, and at least one LLM provider API key —
+the Groq and Google Gemini free tiers are enough to run the whole pipeline
+at no cost.
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Copy `.env.example` to `.env` and fill in whichever provider(s) you plan
+to use (none are required to all be filled in):
+
+```bash
+cp .env.example .env
+```
+
+```
+HF_TOKEN=...              # https://huggingface.co/settings/tokens
+OPENAI_API_KEY=...        # https://platform.openai.com/api-keys
+ANTHROPIC_API_KEY=...     # https://console.anthropic.com
+GEMINI_API_KEY=...        # https://aistudio.google.com/apikey (free)
+GROQ_API_KEY=...          # https://console.groq.com/keys (free)
+```
+
+The optional localized-query generation and directory-mining steps use
+whichever provider you pick for ranking — no separate key needed for them.
+
+### Option A: `main.py` (simplest — one command, whole pipeline)
+
+```bash
+python main.py --product "Ceramic Tiles" --country "Germany" --provider groq
+```
+
+Runs Discovery → Scraping → Ranking end-to-end and writes every stage's
+output to `data/`. Add `--mine-directories` to also pull extra leads out of
+scraped B2B directory pages, or `--no-validate` to skip the free
+country-presence checks (on by default). Results save incrementally as
+they're found (`data/results_<product>_<country>.json`), so an
+interrupted or rate-limited run still leaves real output on disk instead
+of nothing. `python main.py --help` for the full flag list.
+
+### Option B: Streamlit dashboard
+
+```bash
+streamlit run app.py
+```
+
+Opens at `http://localhost:8501`. Enter a product and country, pick an
+LLM provider, toggle localization/directory-mining/validation, and click
+**Run Discovery Engine** — every stage streams live progress (a log and a
+progress bar) plus an overall pipeline progress bar. Results, and the
+intermediate candidates/scraped-pages data, are downloadable as CSV/JSON.
+The **Browse Saved Results** tab loads any previous run from `data/`
+without re-running anything.
+
+### Option C: CLI, phase by phase
+
+Useful for inspecting or re-running a single stage (e.g. re-rank
+already-scraped data with a different provider without re-scraping).
+
+```bash
+# Phase 1: Discovery (add --localize for target-language queries; --localize-provider
+# defaults to groq, also accepts hf/openai/gemini/claude)
+python src/discovery.py --product "Ceramic Tiles" --country "Germany" --localize
+
+# Phase 2: Scraping
+python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
+
+# Phase 3 (optional): Directory lead mining -- then re-run Phase 2 to scrape the new leads
+# (--provider defaults to groq, also accepts hf/openai/gemini/claude)
+python src/mine_directories.py \
+    --candidates data/candidates_ceramic_tiles_germany.json \
+    --scraped data/scraped_ceramic_tiles_germany.json \
+    --product "Ceramic Tiles" --country "Germany"
+python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
+
+# Phase 4: Ranking (--provider: hf, openai, groq, gemini, or claude)
+python src/rank_engine.py --input data/scraped_ceramic_tiles_germany.json \
+    --product "Ceramic Tiles" --country "Germany" --provider groq --top-n 10 --min-score 40
+
+# Phase 5 (optional): Country-presence validation
+python src/validate.py --input data/results_ceramic_tiles_germany.json --country "Germany"
+```
 
 ---
 
 ## Architecture
 
-The pipeline is a sequence of file-based stages under `src/`. Each stage
-reads the previous stage's JSON output and writes its own, so any stage can
-be re-run independently and every intermediate artifact is inspectable.
+The pipeline is a sequence of file-based stages under `src/`, orchestrated
+either by `main.py` (CLI) or `app.py` (Streamlit) at the project root.
+Each stage reads the previous stage's JSON output and writes its own, so
+any stage can be re-run independently and every intermediate artifact is
+inspectable.
 
 ```
 Product + Country
@@ -47,34 +139,38 @@ Phase 1  discovery.py         --> data/candidates_<product>_<country>.json
 Phase 2  scraper.py           --> data/scraped_<product>_<country>.json
         |  (fetch pages, extract clean text/contacts, respect robots.txt)
         v
-Phase 2.5 (optional)
+Phase 3 (optional)
         mine_directories.py   --> merges new leads into candidates_*.json
         |  (extract company names from directory pages already scraped,
         |   search for their real websites, feed back into Phase 2)
         v
-Phase 3  rank_engine.py       --> data/results_<product>_<country>.json
+Phase 4  rank_engine.py       --> data/results_<product>_<country>.json
         |  --provider {hf,openai,groq,gemini,claude}
-        |  (LLM judges genuine-importer role + relevance score per company)
+        |  (LLM judges genuine-importer role + relevance score per company;
+        |   checkpointed to disk after every qualifying result, not just
+        |   at the end)
         v
-Phase 3.5 (optional)
+Phase 5 (optional)
         validate.py           --> data/validated_<product>_<country>.json
         |  (deterministic country-presence checks layered on top)
         v
-Phase 4  app.py (Streamlit)
-         (runs the whole pipeline from a browser, or browses saved results)
+main.py (CLI) or app.py (Streamlit)
+         (orchestrates every phase above end-to-end; app.py also browses
+         saved results without re-running anything)
 ```
 
 ### Module map
 
 | File | Phase | Responsibility |
 |---|---|---|
+| `main.py` | orchestrator | CLI entry point: runs every phase end-to-end for a product/country in one command |
+| `app.py` | orchestrator (6) | Streamlit dashboard: same orchestration as `main.py`, live in a browser, with CSV/JSON export and a saved-results browser |
 | `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup |
-| `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, Jina Reader fallback for JS-heavy pages, robots.txt enforcement, contact extraction |
-| `src/mine_directories.py` | 2.5 | LLM extraction of company names from directory pages, follow-up search per name |
-| `src/rank_schema.py` | 3 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting — used by every provider |
-| `src/rank_engine.py` | 3 | Single CLI (`--provider {hf,openai,groq,gemini,claude}`) dispatching to the right SDK (OpenAI-compatible client for OpenAI/Groq/Gemini, `anthropic` for Claude, `huggingface_hub` for HF), sharing `rank_schema.py` |
-| `src/validate.py` | 3.5 | Deterministic country-presence signals (phone code, TLD, text mention, free OSM geocoding) |
-| `src/app.py` | 4 | Streamlit dashboard: runs the full pipeline live, or browses saved results, with CSV/JSON export |
+| `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, Jina Reader fallback for JS-heavy/non-HTML pages, robots.txt enforcement, contact extraction |
+| `src/mine_directories.py` | 3 (optional) | LLM extraction of company names from directory pages, follow-up search per name |
+| `src/rank_schema.py` | 4 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting/checkpointing — used by every provider |
+| `src/rank_engine.py` | 4 | Single CLI (`--provider {hf,openai,groq,gemini,claude}`) dispatching to the right SDK (OpenAI-compatible client for OpenAI/Groq/Gemini, `anthropic` for Claude, `huggingface_hub` for HF), sharing `rank_schema.py` |
+| `src/validate.py` | 5 (optional) | Deterministic country-presence signals (phone code, TLD, text mention, free OSM geocoding) |
 
 ---
 
@@ -84,7 +180,8 @@ Phase 4  app.py (Streamlit)
 standalone CLI script that reads/writes JSON. This makes every intermediate
 result inspectable and re-runnable (e.g. re-rank already-scraped data with
 a different LLM provider without re-scraping), and keeps each stage's
-failure modes isolated.
+failure modes isolated. `main.py`/`app.py` sit on top as thin orchestrators
+for the common "just run the whole thing" case.
 
 **Multiple LLM providers behind a shared interface.** `rank_schema.py`
 holds the prompt, the Pydantic output schema, the hallucination guard, and
@@ -104,6 +201,23 @@ model confidently misclassified a German tile *manufacturer*
 the class of error the ranking stage exists to prevent. Being able to
 switch providers (Groq's `openai/gpt-oss-120b`, Gemini, Claude, OpenAI)
 without rewriting the pipeline logic was essential, not a nice-to-have.
+
+**Incremental checkpointing, not save-at-the-end.** Phase 4 ranking can run
+for hours across hundreds of pages, and a single provider outage,
+interruption, or exhausted daily quota partway through used to mean the
+entire run's output was lost. `rank_companies()` now writes the current
+best-known results to disk after *every* qualifying judgment, so the
+results file always reflects real progress, not just a completed run.
+
+**Fail fast on unrecoverable rate limits.** A per-minute rate limit is
+worth retrying with backoff; a daily-quota rate limit is not — retrying
+still fails identically on every one of the remaining pages, burning
+wall-clock time for nothing. `rank_engine.is_hard_rate_limit()`
+pattern-matches provider error messages for daily/quota language (seen in
+practice on Groq's "tokens per day" limit) and raises a distinct
+`HardRateLimitError` that `rank_companies()` catches to stop the run
+immediately, returning whatever's already been checkpointed instead of
+grinding through certain-to-fail retries on everything left.
 
 **Domain classification at discovery time.** Every discovered URL is
 tagged `website` / `directory` / `noise` / `linkedin` based on its domain
@@ -133,14 +247,25 @@ deliberately avoids. See [Assumptions & Limitations](#assumptions--limitations).
 
 **Hallucination-guarded contact extraction.** The scraper extracts
 emails/phones/LinkedIn links from each page independently via regex and
-`mailto:`/`tel:` parsing. When the LLM proposes a contact value in Phase 3,
+`mailto:`/`tel:` parsing. When the LLM proposes a contact value in Phase 4,
 it's checked against that independently-extracted list — a value the LLM
 invents that wasn't actually found on the page is silently dropped rather
 than trusted. This is the main defense against the LLM fabricating a
 plausible-looking but fake email or phone number.
 
+**An explicit scoring rubric, not a free-floating 0–100.** Early runs
+showed scores clustering on arbitrary low round numbers (5, 10, 15, 20)
+with no clear separation between "wrong role" and "right role, weak
+evidence." The prompt now spells out what each band means (0–10 wrong
+role/no evidence, 11–30 wrong role with tangential relevance, 31–50
+plausible but indirect evidence, 51–70 direct evidence, 71–90 strong
+explicit evidence, 91–100 unambiguous multi-signal match), and ranking
+calls use `temperature=0` wherever the provider allows it (Claude's
+current models reject a non-default temperature entirely, so the rubric
+is the only determinism lever there).
+
 **Deterministic validation layered on top of the LLM, not replacing it.**
-Phase 3.5 doesn't re-score or re-rank anything — it adds a
+Phase 5 doesn't re-score or re-rank anything — it adds a
 `country_signals` breakdown and a `validation_confidence` count as
 supplementary evidence for a human reviewer. A legitimate importer can
 still fail every heuristic (generic `.com` domain, toll-free number), so
@@ -163,27 +288,30 @@ to a directory site once stalled for ~3 minutes despite a 5s timeout.
   no rate-limit cost. 13 query templates per run mixing importer /
   distributor / wholesaler / buyer / trading-company intent, plus
   trade-fair-exhibitor queries and directory-scoped (`site:`) queries.
-- **Localized search queries** — an LLM (Groq) generates additional
-  queries in the target country's primary business language. English-only
-  queries under-represent genuine local importers (their sites and
+- **Localized search queries** — an LLM generates additional queries in
+  the target country's primary business language. English-only queries
+  under-represent genuine local importers (their sites and
   self-descriptions are in the local language) while English-language
   exporter/manufacturer SEO content from third countries dominates
   English results instead. Empirically this roughly doubled useful
   candidate count on the Ceramic Tiles / Germany test run.
 - **Company websites** — scraped directly (`requests` + BeautifulSoup),
-  with a Jina Reader (`r.jina.ai`) fallback for JS-rendered pages a
-  static fetch can't execute.
+  with a Jina Reader (`r.jina.ai`) fallback for JS-rendered pages and
+  non-HTML content (e.g. PDFs) a static fetch can't parse.
 - **B2B trade directories** — europages, Kompass, TradeWheel, Volza,
   ExportHub, wer-liefert-was (wlw), etc. Used two ways: as direct
   candidates (tagged `directory`, never scored as a company), and as a
-  lead source for Phase 2.5 directory mining.
+  lead source for Phase 3 directory mining.
 - **Trade fair exhibitor pages** — one of the highest-signal sources for
   genuine B2B buyers, since exhibitor/visitor lists are companies
   actively engaged with the product category in that market.
 - **LinkedIn company URLs** — sourced via search only (`site:linkedin.com/company`
-  queries), never scraped.
-- **OpenStreetMap Nominatim** — free geocoding (no API key) used in Phase
-  3.5 to check whether a company name resolves to a real location in the
+  queries). LinkedIn's own page is never fetched (against its ToS), but the
+  search engine's title/snippet is kept as low-confidence evidence — useful
+  for a company whose only real presence is a LinkedIn page, not a
+  separate website.
+- **OpenStreetMap Nominatim** — free geocoding (no API key) used in Phase 5
+  to check whether a company name resolves to a real location in the
   target country.
 
 ---
@@ -200,7 +328,9 @@ pages, with reduced confidence), the LLM is asked to judge:
    ("we offer/produce/manufacture/supply X to dealers/architects/customers")
    as a signal for the latter group — this exact confusion (a manufacturer
    being scored as a buyer) was the concrete bug that shaped this prompt.
-2. **`relevance_score`** (0–100) — how strong a match this company is.
+2. **`relevance_score`** (0–100) — scored against an explicit rubric (see
+   Design Decisions) rather than a free-floating number, for comparability
+   across companies and providers.
 3. **`match_reason`** — 2–3 sentences citing specific evidence from the
    page. The model is instructed to use a low-to-mid score and say so
    explicitly when evidence is thin, rather than guess confidently.
@@ -211,8 +341,12 @@ Only companies with a genuine buyer-side role **and** `relevance_score >=
 min_score` (default 40) survive. Survivors are sorted by `relevance_score`
 descending and truncated to the top N (default 10) — "quality over
 quantity" is enforced at this filtering step, not just aspirationally.
+Every stage of this filtering is visible in the log/UI: how many pages
+were scraped vs. judged (directory pages are excluded from judging on
+purpose — see Design Decisions), and a one-sentence summary of *why* next
+to every score as it's produced.
 
-If Phase 3.5 validation is run, each surviving company additionally gets:
+If Phase 5 validation is run, each surviving company additionally gets:
 
 - `phone_country_code` — does the contact phone's calling code match the
   target country?
@@ -244,16 +378,18 @@ If Phase 3.5 validation is run, each surviving company additionally gets:
 - **English + one localized query set is not exhaustive recall.** Some
   genuine importers will simply not be found, especially in markets with
   multiple regional languages or highly fragmented B2B ecosystems.
-- **Free-tier LLMs vary a lot in reasoning quality.** The free Hugging
-  Face 7B model (`Qwen2.5-7B-Instruct`) was noticeably worse at the
-  buyer-vs-seller distinction than Groq's Llama-3.3-70B or Claude/GPT —
-  see the multi-provider design decision above. Results will differ
-  meaningfully depending on which provider/model is selected.
-- **Bot-protected sources are accepted as out of reach.** On the Ceramic
-  Tiles / Germany test run, 7 of 67 candidates failed to scrape due to
-  active bot-detection (Vercel security checkpoints, WAF 403s) even where
-  `robots.txt` technically allowed access. No attempt is made to defeat
-  these — see the ToS discussion in Design Decisions.
+- **Free-tier LLMs vary a lot in reasoning quality, and have real quota
+  limits.** The free Hugging Face 7B model (`Qwen2.5-7B-Instruct`) was
+  noticeably worse at the buyer-vs-seller distinction than Groq's
+  `gpt-oss-120b` or Claude/GPT — see the multi-provider design decision
+  above. Groq's free tier also has a hard daily token quota; a large run
+  can exhaust it mid-ranking (handled via checkpointing + fail-fast, not
+  avoided entirely). Results will differ meaningfully depending on which
+  provider/model is selected.
+- **Bot-protected sources are accepted as out of reach.** Some candidates
+  fail to scrape due to active bot-detection (Vercel security checkpoints,
+  WAF 403s) even where `robots.txt` technically allowed access. No attempt
+  is made to defeat these — see the ToS discussion in Design Decisions.
 - **Directory-mined leads are lower-confidence by construction.** A
   company name extracted from a directory listing is re-searched to find
   its own website (same verification standard as everything else), but
@@ -262,90 +398,7 @@ If Phase 3.5 validation is run, each surviving company additionally gets:
 
 ---
 
-## Setup Instructions
-
-### Prerequisites
-
-- Python 3.11+
-- At least one LLM provider API key (see below) — the Groq and Google
-  Gemini free tiers are enough to run the whole pipeline at no cost.
-
-### Install
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Configure API keys
-
-Copy `.env.example` to `.env` and fill in whichever provider(s) you plan
-to use — none are required to be all filled in:
-
-```bash
-cp .env.example .env
-```
-
-```
-HF_TOKEN=...              # https://huggingface.co/settings/tokens
-OPENAI_API_KEY=...        # https://platform.openai.com/api-keys
-ANTHROPIC_API_KEY=...     # https://console.anthropic.com
-GEMINI_API_KEY=...        # https://aistudio.google.com/apikey (free)
-GROQ_API_KEY=...          # https://console.groq.com/keys (free)
-```
-
-The optional localized-query generation (Phase 1) and directory mining
-(Phase 2.5) steps use whichever provider you pick for ranking — no
-separate key is needed for them.
-
----
-
-## Usage
-
-### Option A: Streamlit dashboard (recommended)
-
-```bash
-streamlit run src/app.py
-```
-
-Opens at `http://localhost:8501`. Enter a product and country, pick an
-LLM provider, toggle localization/directory-mining/validation, and click
-**Run Discovery Engine**. Results can be exported as CSV or JSON. The
-**Browse Saved Results** tab loads any previous run from `data/` without
-re-running anything.
-
-### Option B: CLI, phase by phase
-
-```bash
-# Phase 1: Discovery (add --localize for target-language queries; --localize-provider
-# defaults to groq, also accepts hf/openai/gemini/claude)
-python src/discovery.py --product "Ceramic Tiles" --country "Germany" --localize
-
-# Phase 2: Scraping
-python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
-
-# Phase 2.5 (optional): Directory lead mining -- then re-run Phase 2 to scrape the new leads
-# (--provider defaults to groq, also accepts hf/openai/gemini/claude)
-python src/mine_directories.py \
-    --candidates data/candidates_ceramic_tiles_germany.json \
-    --scraped data/scraped_ceramic_tiles_germany.json \
-    --product "Ceramic Tiles" --country "Germany"
-python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
-
-# Phase 3: Ranking (--provider: hf, openai, groq, gemini, or claude)
-python src/rank_engine.py --input data/scraped_ceramic_tiles_germany.json \
-    --product "Ceramic Tiles" --country "Germany" --provider groq --top-n 10 --min-score 40
-
-# Phase 3.5 (optional): Country-presence validation
-python src/validate.py --input data/results_ceramic_tiles_germany.json --country "Germany"
-```
-
----
-
 ## Sample Results
 
-_Pending — see note in conversation. `data/results_ceramic_tiles_germany.json`
-needs a fresh run against the localized/expanded candidate set before this
-section can cite real numbers, and the assignment requires results for
-three product–country combinations, not one._
+_Pending — three product–country combinations are required for the final
+submission; sample runs will be added here once available._

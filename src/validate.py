@@ -1,7 +1,7 @@
 """
-Phase 3.5: Deterministic Country-Presence Validation.
+Phase 5: Deterministic Country-Presence Validation.
 
-The LLM ranking stage (Phase 3) can be fooled by confident-sounding text --
+The LLM ranking stage (Phase 4) can be fooled by confident-sounding text --
 it has no independent way to confirm a company actually operates in the
 target country. This stage layers free, deterministic checks on top of the
 LLM's judgment rather than replacing it:

@@ -1,5 +1,5 @@
 """
-Phase 3: LLM Reasoning, Filtering & Ranking.
+Phase 4: LLM Reasoning, Filtering & Ranking.
 
 Single entry point for every supported LLM provider -- pick one with
 --provider. Groq, Gemini, and OpenAI all speak the OpenAI-compatible
@@ -60,6 +60,19 @@ PROVIDER_CONFIGS = {
         "default_model": "Qwen/Qwen2.5-7B-Instruct", "max_tokens": 500,
     },
 }
+
+
+_HARD_RATE_LIMIT_HINTS = ("per day", "tpd", "rpd", "daily limit", "daily quota")
+
+
+def is_hard_rate_limit(message: str) -> bool:
+    """Distinguishes a long/daily quota exhaustion (retrying won't help for
+    minutes to hours) from a transient per-minute rate limit (worth
+    retrying with backoff). Pattern-matched against the error message text
+    since providers don't expose this as a structured field uniformly --
+    seen so far on Groq's "tokens per day (TPD)" errors."""
+    lowered = message.lower()
+    return any(hint in lowered for hint in _HARD_RATE_LIMIT_HINTS)
 
 
 def get_raw_completion(
@@ -144,6 +157,8 @@ def judge_openai_compatible(
             data = rc.extract_json_object(content)
             return rc.LLMJudgment.model_validate(data)
         except RateLimitError as exc:
+            if is_hard_rate_limit(str(exc)):
+                raise rc.HardRateLimitError(str(exc)) from exc
             last_error = exc
             wait = 2 ** attempt
             print(f"  ! rate limited ({exc}); retrying in {wait}s...")
@@ -189,6 +204,8 @@ def judge_claude(
             data = rc.extract_json_object(content)
             return rc.LLMJudgment.model_validate(data)
         except RateLimitError as exc:
+            if is_hard_rate_limit(str(exc)):
+                raise rc.HardRateLimitError(str(exc)) from exc
             last_error = exc
             wait = 2 ** attempt
             print(f"  ! rate limited ({exc}); retrying in {wait}s...")
@@ -232,6 +249,8 @@ def judge_hf(
             data = rc.extract_json_object(content)
             return rc.LLMJudgment.model_validate(data)
         except HfHubHTTPError as exc:
+            if is_hard_rate_limit(str(exc)):
+                raise rc.HardRateLimitError(str(exc)) from exc
             last_error = exc
             wait = 2 ** attempt
             print(f"  ! HF API error ({exc}); retrying in {wait}s...")
