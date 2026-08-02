@@ -1,6 +1,6 @@
 """
 Run the full importer discovery pipeline end-to-end from the command line:
-Discovery -> Scraping -> [Directory Mining] -> Ranking -> [Validation].
+Discovery -> Scraping -> [Directory & Report Mining] -> Ranking -> [Validation].
 
 This is the CLI equivalent of clicking "Run Discovery Engine" in app.py --
 same phases, same incremental checkpointing (a result file after every
@@ -52,7 +52,7 @@ def run_pipeline(
     product: str, country: str, provider: str, model: str | None, api_key: str,
     max_per_query: int = 8, delay: float = 1.0, top_n: int = 10, min_score: int = 40,
     localize: bool = True, mine_dirs: bool = False, validate: bool = True,
-    use_map_lookup: bool = True,
+    use_map_lookup: bool = True, min_candidates: int = 15, max_expansion_rounds: int = 2,
 ) -> list[dict]:
     slug = f"{slugify(product)}_{slugify(country)}"
     DATA_DIR.mkdir(exist_ok=True)
@@ -63,6 +63,7 @@ def run_pipeline(
     candidates = disc.discover(
         product, country, max_results_per_query=max_per_query,
         delay_seconds=delay, localize=localize, localize_provider=provider,
+        min_candidates=min_candidates, max_expansion_rounds=max_expansion_rounds,
     )
     candidates_dicts = [asdict(c) for c in candidates]
     candidates_path = DATA_DIR / f"candidates_{slug}.json"
@@ -77,7 +78,7 @@ def run_pipeline(
     print(f"Scraped {len(scraped_dicts)} pages -> {scraped_path}")
 
     if mine_dirs:
-        print("\n=== Phase 3: Directory Mining ===")
+        print("\n=== Phase 3: Directory & Report Mining ===")
         merged_candidates = miner.mine_leads(
             candidates_dicts, scraped_dicts, product, country,
             max_results_per_query=3, delay_seconds=delay, provider=provider,
@@ -138,12 +139,21 @@ def main() -> None:
                               "business language (default: on).")
     parser.add_argument("--no-localize", action="store_false", dest="localize")
     parser.add_argument("--mine-directories", action="store_true",
-                         help="Extract company leads from scraped directory pages (default: off).")
+                         help="Extract company leads from scraped directory and market "
+                              "research report pages (default: off).")
     parser.add_argument("--validate", action="store_true", default=True,
                          help="Run free country-presence validation on the results (default: on).")
     parser.add_argument("--no-validate", action="store_false", dest="validate")
     parser.add_argument("--no-map-lookup", action="store_true",
                          help="Skip the OSM Nominatim geocoding check during validation.")
+    parser.add_argument("--min-candidates", type=int, default=15,
+                         help="If discovery's initial queries yield fewer than this many "
+                              "genuine (website/social) candidates, ask the LLM for "
+                              "supplementary queries and search again. 0 disables this "
+                              "(default: 15).")
+    parser.add_argument("--max-expansion-rounds", type=int, default=2,
+                         help="Max supplementary query rounds when --min-candidates is set "
+                              "(default: 2).")
     args = parser.parse_args()
 
     config = rnk.PROVIDER_CONFIGS[args.provider]
@@ -160,6 +170,7 @@ def main() -> None:
         top_n=args.top_n, min_score=args.min_score,
         localize=args.localize, mine_dirs=args.mine_directories,
         validate=args.validate, use_map_lookup=not args.no_map_lookup,
+        min_candidates=args.min_candidates, max_expansion_rounds=args.max_expansion_rounds,
     )
 
 

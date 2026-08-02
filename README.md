@@ -102,7 +102,7 @@ python src/discovery.py --product "Ceramic Tiles" --country "Germany" --localize
 # Phase 2: Scraping
 python src/scraper.py --input data/candidates_ceramic_tiles_germany.json
 
-# Phase 3 (optional): Directory lead mining -- then re-run Phase 2 to scrape the new leads
+# Phase 3 (optional): Directory & report lead mining -- then re-run Phase 2 to scrape the new leads
 # (--provider defaults to groq, also accepts hf/openai/gemini/claude)
 python src/mine_directories.py \
     --candidates data/candidates_ceramic_tiles_germany.json \
@@ -141,8 +141,9 @@ Phase 2  scraper.py           --> data/scraped_<product>_<country>.json
         v
 Phase 3 (optional)
         mine_directories.py   --> merges new leads into candidates_*.json
-        |  (extract company names from directory pages already scraped,
-        |   search for their real websites, feed back into Phase 2)
+        |  (extract company names from directory AND market-research-report
+        |   pages already scraped, search for their real websites, feed
+        |   back into Phase 2)
         v
 Phase 4  rank_engine.py       --> data/results_<product>_<country>.json
         |  --provider {hf,openai,groq,gemini,claude}
@@ -167,7 +168,7 @@ main.py (CLI) or app.py (Streamlit)
 | `app.py` | orchestrator (6) | Streamlit dashboard: same orchestration as `main.py`, live in a browser, with CSV/JSON export and a saved-results browser |
 | `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup |
 | `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, Jina Reader fallback for JS-heavy/non-HTML pages, robots.txt enforcement, contact extraction |
-| `src/mine_directories.py` | 3 (optional) | LLM extraction of company names from directory pages, follow-up search per name |
+| `src/mine_directories.py` | 3 (optional) | LLM extraction of company names from directory and market-research-report pages, follow-up search per name |
 | `src/rank_schema.py` | 4 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting/checkpointing — used by every provider |
 | `src/rank_engine.py` | 4 | Single CLI (`--provider {hf,openai,groq,gemini,claude}`) dispatching to the right SDK (OpenAI-compatible client for OpenAI/Groq/Gemini, `anthropic` for Claude, `huggingface_hub` for HF), sharing `rank_schema.py` |
 | `src/validate.py` | 5 (optional) | Deterministic country-presence signals (phone code, TLD, text mention, free OSM geocoding) |
@@ -220,12 +221,22 @@ immediately, returning whatever's already been checkpointed instead of
 grinding through certain-to-fail retries on everything left.
 
 **Domain classification at discovery time.** Every discovered URL is
-tagged `website` / `directory` / `noise` / `linkedin` based on its domain
-(see `NOISE_DOMAINS`, `DIRECTORY_DOMAINS`, `LINKEDIN_DOMAINS` in
-`discovery.py`). This determines how each URL is treated downstream:
-directories are never scored as if they were a company; noise domains
-(Pinterest, Etsy, market-research report sites, etc.) are skipped before
-ever making a network request; LinkedIn is never fetched at all.
+tagged `website` / `directory` / `report` / `noise` / `social` based on its
+domain (see `NOISE_DOMAINS`, `DIRECTORY_DOMAINS`, `REPORT_DOMAINS`,
+`SOCIAL_DOMAINS` in `discovery.py`). This determines how each URL is
+treated downstream: directories and reports are scraped normally in Phase
+2 but never scored as if they were a company in Phase 4 -- instead they're
+candidate input for Phase 3's mining step, which extracts real company
+names mentioned on the page (buyers/importers/distributors for a
+directory; "key players"/"competitive landscape" for a report) and
+searches for each one's own site. Noise domains (Pinterest, Etsy, etc.)
+are skipped before ever making a network request -- there's no company
+name worth mining out of a Pinterest board. LinkedIn and Facebook are
+never fetched at all, but unlike pure noise, their search-result
+title/snippet is still kept as low-confidence evidence -- a real business
+(especially a smaller importer/wholesaler) can have its primary or only
+presence on one of these rather than a dedicated website, and discarding
+those entirely would lose real leads, not just noise.
 
 **LinkedIn is never scraped.** LinkedIn requires login for nearly all
 content and actively fights automated access; scraping it violates its
@@ -285,12 +296,20 @@ to a directory site once stalled for ~3 minutes despite a 5s timeout.
 ## Data Sources
 
 - **Web search** — DuckDuckGo, via the `ddgs` Python library. No API key,
-  no rate-limit cost. 13 query templates per run mixing importer /
-  distributor / wholesaler / buyer / trading-company intent, plus
-  trade-fair-exhibitor queries and directory-scoped (`site:`) queries.
-- **Localized search queries** — an LLM generates additional queries in
-  the target country's primary business language. English-only queries
-  under-represent genuine local importers (their sites and
+  no rate-limit cost. 11 fixed English query templates per run mixing
+  importer / distributor / wholesaler / buyer / trading-company intent,
+  plus trade-fair-exhibitor queries. No directories are hardcoded into
+  these -- see below.
+- **Localized search queries and country-relevant directories** — an LLM
+  generates additional queries in the target country's primary business
+  language, *and* is separately asked which B2B trade directories are
+  actually relevant to that specific country, building `site:`-scoped
+  queries against those rather than a fixed list. A hardcoded directory
+  list would inevitably mean defaulting to well-known European/global
+  names (europages.com, kompass.com) regardless of target market --
+  wasted query budget for a search targeting, say, South Asia, with no
+  equivalent boost from a locally-relevant directory. English-only
+  queries under-represent genuine local importers (their sites and
   self-descriptions are in the local language) while English-language
   exporter/manufacturer SEO content from third countries dominates
   English results instead. Empirically this roughly doubled useful
@@ -301,15 +320,45 @@ to a directory site once stalled for ~3 minutes despite a 5s timeout.
 - **B2B trade directories** — europages, Kompass, TradeWheel, Volza,
   ExportHub, wer-liefert-was (wlw), etc. Used two ways: as direct
   candidates (tagged `directory`, never scored as a company), and as a
-  lead source for Phase 3 directory mining.
+  lead source for Phase 3 mining.
+- **Market research reports** — Mordor Intelligence, Grand View Research,
+  IMARC, Fortune Business Insights, and similar analyst-firm publishers
+  (tagged `report`, see `REPORT_DOMAINS` in `discovery.py`). A report
+  titled "{product} Market in {country}" often names real "key players"/
+  "competitive landscape" companies specifically active in that market —
+  high-signal, since an analyst firm already did the work of identifying
+  who's actually in this market, rather than a generic global directory
+  listing. These were previously classified as pure noise and skipped
+  before ever being scraped; like directories, they're now scraped
+  normally and fed into Phase 3 mining instead. Global/English-language
+  regardless of which country's market they cover, so — unlike trade
+  directories — a fixed domain list here doesn't carry the same regional
+  bias risk.
 - **Trade fair exhibitor pages** — one of the highest-signal sources for
   genuine B2B buyers, since exhibitor/visitor lists are companies
   actively engaged with the product category in that market.
-- **LinkedIn company URLs** — sourced via search only (`site:linkedin.com/company`
-  queries). LinkedIn's own page is never fetched (against its ToS), but the
-  search engine's title/snippet is kept as low-confidence evidence — useful
-  for a company whose only real presence is a LinkedIn page, not a
-  separate website.
+- **LinkedIn and Facebook company URLs** — sourced via search only
+  (`site:linkedin.com/company`, and Facebook Pages/Marketplace results that
+  turn up organically). Neither platform's own page is ever fetched
+  (login-walled, against their ToS), but the search engine's title/snippet
+  is kept as low-confidence evidence — useful for a company whose only real
+  presence is a LinkedIn page or Facebook Page, not a separate website. This
+  matters more for smaller importers/wholesalers/traders than it might seem:
+  many run their entire public presence on one of these platforms with no
+  dedicated site at all, and dropping them as "noise" (Facebook's original
+  classification) silently excluded genuine leads.
+- **Adaptive query expansion** — if the initial round of queries (English +
+  localized + directory `site:` queries) turns up fewer than a configurable
+  minimum number of genuine (website/social) candidates, an LLM is asked for
+  new queries that deliberately avoid repeating what's already been tried —
+  prioritizing alternate product terminology, trade fairs/expos/industry
+  associations, and local directories or chambers of commerce specific to
+  the target country. This repeats for a capped number of rounds (default 2)
+  and stops early if the threshold is met or the LLM has nothing new to
+  suggest, so it never turns into an unbounded retry loop. Configurable via
+  `--min-candidates`/`--max-expansion-rounds` on `main.py`/`discovery.py`, or
+  the "Min genuine candidates before expanding search" control in the
+  Streamlit app's Advanced section.
 - **OpenStreetMap Nominatim** — free geocoding (no API key) used in Phase 5
   to check whether a company name resolves to a real location in the
   target country.

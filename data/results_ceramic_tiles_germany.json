@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "company_name": "Inntaler Fliesenhandel",
+    "website": "https://www.ifh-kaiser.de/",
+    "relevance_score": 82,
+    "match_reason": "The site describes itself as \"Ihr Fachgroßhandel für Fliesen, Keramik und Mosaik\" and states that it \"führt qualitativ hochwertige Fliesen, Keramik und Mosaik von bekannten internationalen Herstellern\" – indicating it purchases tiles from manufacturers to sell to retailers, not that it manufactures them. The German phone numbers and address confirm operation in Germany, making it a plausible buyer for an Indian ceramic‑tile exporter.",
+    "contact_email": "info@ifh-kaiser.de",
+    "contact_phone": "+49 (0) 8631 1674600",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.ifh-kaiser.de/",
+      ""
+    ],
+    "company_role": "wholesaler"
+  }
+]

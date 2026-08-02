@@ -36,7 +36,16 @@ PROVIDER_CONFIGS = {
         "base_url": "https://api.groq.com/openai/v1",
         # OpenAI's open-weight 120B flagship, available on Groq's free tier
         # with a *higher* daily token quota than llama-3.3-70b-versatile.
-        "default_model": "openai/gpt-oss-120b", "max_tokens": 500,
+        # It's a reasoning model -- hidden chain-of-thought tokens count
+        # against max_tokens. Reproduced directly: the identical prompt at
+        # temperature=0 used 220 then 281 reasoning tokens across two calls
+        # (341 then 408 completion tokens total) -- not fully deterministic
+        # even at temp=0, and close enough to 500 that an unlucky call
+        # truncates mid-JSON ("max completion tokens reached before
+        # generating a valid document"). Raised for headroom, not for any
+        # claimed effect on judgment quality -- this only addresses the
+        # truncation failure itself.
+        "default_model": "openai/gpt-oss-120b", "max_tokens": 2048,
     },
     "gemini": {
         "kind": "openai_compatible", "env_var": "GEMINI_API_KEY",
