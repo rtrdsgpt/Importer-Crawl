@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 MAX_PAGE_CHARS_IN_PROMPT = 4000  # keep prompts small/cheap and within context limits
 
@@ -112,6 +112,20 @@ class LLMJudgment(BaseModel):
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
     contact_linkedin: Optional[str] = None
+
+    @field_validator("contact_email", "contact_phone", "contact_linkedin", mode="before")
+    @classmethod
+    def _first_if_list(cls, v):
+        # Some models (seen on a local Ollama/Gemma run) return a JSON array
+        # when a page has multiple emails/phones instead of picking one, even
+        # though the schema/prompt ask for a single string -- that's a
+        # structural mistake, not a judgment one, so it's cheaper and more
+        # reliable to just take the first value here than to burn a retry
+        # round-trip asking the model to reformat something it already got
+        # right in substance.
+        if isinstance(v, list):
+            return next((str(x) for x in v if x), None)
+        return v
 
 
 class RankedCompany(BaseModel):
@@ -249,6 +263,8 @@ def rank_companies(
     on_progress: Callable[[str], None] | None = None,
     checkpoint_path: Path | None = None,
     next_judge_fn: Callable[[], Optional[JudgeFn]] | None = None,
+    start_index: int = 1,
+    resume_from: list[RankedCompany] | None = None,
 ) -> list[RankedCompany]:
     """Runs judge_fn(page, product, country) over every eligible page,
     filters to genuine buyer-side roles above min_score, and returns the
@@ -265,7 +281,16 @@ def rank_companies(
     next_judge_fn() for a judge_fn built on the next API key and retries
     the same page, so one key running out mid-run doesn't waste every
     remaining page. Only once next_judge_fn() itself returns None (no more
-    keys) does the run stop early as before."""
+    keys) does the run stop early as before.
+
+    start_index (1-indexed, matching the printed "[i/N]" log lines) skips
+    every page before it without judging them -- for resuming a run that
+    was cut off partway through (e.g. every configured key's daily quota
+    ran out) with a different provider/model, without re-judging or paying
+    for pages already covered. resume_from seeds the result list with
+    qualifying companies a prior, now-abandoned run already found and
+    checkpointed to disk, so this run's own checkpoint (which overwrites
+    checkpoint_path wholesale) doesn't lose them."""
     pages_to_judge = eligible_pages(pages)
 
     # eligible_pages() only keeps source_type=="website" pages that were
@@ -282,9 +307,16 @@ def rank_companies(
         f"{other_excluded} failed/skipped/noise pages excluded -- nothing to judge)"
     )
 
-    ranked: list[RankedCompany] = []
+    ranked: list[RankedCompany] = list(resume_from) if resume_from else []
+    if start_index > 1:
+        skip_msg = f"Resuming at page {start_index}/{len(pages_to_judge)} -- skipping earlier pages"
+        print(skip_msg, flush=True)
+        if on_progress:
+            on_progress(skip_msg)
     give_up = False
     for i, page in enumerate(pages_to_judge, start=1):
+        if i < start_index:
+            continue
         msg = f"[{i}/{len(pages_to_judge)}] judging: {page['url']}"
         print(msg, flush=True)
         if on_progress:

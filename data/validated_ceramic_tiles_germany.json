@@ -1,17 +1,206 @@
 [
   {
-    "company_name": "Inntaler Fliesenhandel",
-    "website": "https://www.ifh-kaiser.de/",
-    "relevance_score": 82,
-    "match_reason": "The site describes itself as \"Ihr Fachgroßhandel für Fliesen, Keramik und Mosaik\" and states that it \"führt qualitativ hochwertige Fliesen, Keramik und Mosaik von bekannten internationalen Herstellern\" – indicating it purchases tiles from manufacturers to sell to retailers, not that it manufactures them. The German phone numbers and address confirm operation in Germany, making it a plausible buyer for an Indian ceramic‑tile exporter.",
-    "contact_email": "info@ifh-kaiser.de",
-    "contact_phone": "+49 (0) 8631 1674600",
+    "company_name": "Aug. Höhne Söhne",
+    "website": "https://hoehnesoehne.de/",
+    "relevance_score": 91,
+    "match_reason": "The company explicitly identifies itself as a 'Fliesen Großhandel' (Tile Wholesaler) and states it has a broad portfolio of products and manufacturers. While they are a wholesaler/distributor role, their primary function is to sell tiles from various producers, making them a potential source for an Indian exporter to approach for distribution or wholesale deals.",
+    "contact_email": null,
+    "contact_phone": null,
     "contact_linkedin": null,
     "sources_used": [
-      "https://www.ifh-kaiser.de/",
+      "https://hoehnesoehne.de/",
       ""
     ],
     "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "1/3"
+  },
+  {
+    "company_name": "Chiemgauer Fliesenzentrum",
+    "website": "https://chiemgauer-fliesenzentrum.de/",
+    "relevance_score": 91,
+    "match_reason": "The company operates an 'Onlineshop mit eigenem Lager' and lists numerous products (Savoia, Isla Tiles, Ariana Ceramica, etc.) with prices and direct purchase links. This structure indicates they are selling tiles sourced from various manufacturers, positioning them as a distributor or retailer rather than a buyer.",
+    "contact_email": "verkauf@chiemgauer-fliesenzentrum.de",
+    "contact_phone": "+49 (0) 8036 - 909 62 63",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://chiemgauer-fliesenzentrum.de/",
+      ""
+    ],
+    "company_role": "distributor",
+    "country_signals": {
+      "phone_country_code": true,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "2/4"
+  },
+  {
+    "company_name": "Rothkegel BauFachhandel",
+    "website": "https://www.rothkegel-baufachhandel.de/sortiment/fliesen/",
+    "relevance_score": 91,
+    "match_reason": "The company explicitly states it offers a large selection of tiles (Fliesen) and related accessories for various applications like bathrooms and terraces. It mentions sourcing products from major European manufacturers (Villeroy & Boch, Marazzi), indicating a distribution role rather than being an end-user buyer.",
+    "contact_email": "L.Oehme@rothkegel-baufachhandel.de",
+    "contact_phone": "03372/422 448",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.rothkegel-baufachhandel.de/sortiment/fliesen/",
+      ""
+    ],
+    "company_role": "distributor",
+    "country_signals": {
+      "phone_country_code": false,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": true
+    },
+    "validation_confidence": "2/4"
+  },
+  {
+    "company_name": "KERAMUNDO",
+    "website": "https://shop.keramundo.de/",
+    "relevance_score": 90,
+    "match_reason": "The page content describes KERAMUNDO as a 'Baustofffachhandel' (specialty building materials trade) and lists extensive product categories including various types of tiles ('Fliesen'), porcelain slabs, and associated accessories. This indicates they are a major distributor or wholesaler of these products in Germany.",
+    "contact_email": null,
+    "contact_phone": "+49 69 668110-666",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://shop.keramundo.de/",
+      ""
+    ],
+    "company_role": "distributor",
+    "country_signals": {
+      "phone_country_code": true,
+      "domain_tld": true,
+      "text_mentions_country": true,
+      "found_on_map": true
+    },
+    "validation_confidence": "4/4"
+  },
+  {
+    "company_name": "SGBD Deutschland GmbH",
+    "website": "https://www.finalit.de/de/vertrieb/deutschland/",
+    "relevance_score": 90,
+    "match_reason": "The company is listed multiple times with addresses and phone numbers in various locations (e.g., Remseck, Albstadt-Ebingen, München). This suggests it operates as a large supplier or wholesaler of building materials.",
+    "contact_email": "Gerhard.Lentschig@schunke.com",
+    "contact_phone": "+49 7146 8756-506",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.finalit.de/de/vertrieb/deutschland/",
+      ""
+    ],
+    "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": true,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": false
+    },
+    "validation_confidence": "2/4"
+  },
+  {
+    "company_name": "Onur Bau",
+    "website": "https://onurbau.de/unternehmen/",
+    "relevance_score": 85,
+    "match_reason": "The search snippet explicitly identifies Onur Bau as a 'Fliesen Großhandel' (Tile Wholesaler) and lists multiple locations in Germany. The page content also features links related to products and service, confirming their active role in the tile trade.",
+    "contact_email": null,
+    "contact_phone": null,
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://onurbau.de/unternehmen/",
+      ""
+    ],
+    "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": null,
+      "domain_tld": true,
+      "text_mentions_country": true,
+      "found_on_map": true
+    },
+    "validation_confidence": "3/3"
+  },
+  {
+    "company_name": "Fagflis - L-Flis & Interior AS",
+    "website": "https://www.stonecontact.com/suppliers-27058/fagflis-l-flis-interior-as",
+    "relevance_score": 71,
+    "match_reason": "The company explicitly states in its description that it is a chain that 'import ceramic tiles from some of the most reputable manufacturers in Europe.' While the company's location is Norway, this confirms their role as an importer/buyer of the specified product type.",
+    "contact_email": null,
+    "contact_phone": "22 88 11 40",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.stonecontact.com/suppliers-27058/fagflis-l-flis-interior-as",
+      ""
+    ],
+    "company_role": "importer",
+    "country_signals": {
+      "phone_country_code": false,
+      "domain_tld": false,
+      "text_mentions_country": true,
+      "found_on_map": false
+    },
+    "validation_confidence": "1/4"
+  },
+  {
+    "company_name": "Raab Karcher",
+    "website": "https://www.raabkarcher.de/?srsltid=AfmBOorottmNkXlMGYtny4j6NqWBAXNVlv8xSA66PUdZkxfsQtRtE4aE",
+    "relevance_score": 71,
+    "match_reason": "The company is described as a 'führende Baustofffachhandel' (leading building material specialist retailer/dealer) and lists extensive product categories including 'Fliesen', 'Keramikplatten', and various tile brands. This indicates they are a major distributor or wholesaler of these materials rather than an end-user buyer.",
+    "contact_email": null,
+    "contact_phone": "+49 69 668110-666",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.raabkarcher.de/?srsltid=AfmBOorottmNkXlMGYtny4j6NqWBAXNVlv8xSA66PUdZkxfsQtRtE4aE",
+      ""
+    ],
+    "company_role": "wholesaler",
+    "country_signals": {
+      "phone_country_code": true,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": true
+    },
+    "validation_confidence": "3/4"
+  },
+  {
+    "company_name": "Linnenbecker",
+    "website": "https://www.linnenbecker.de/Shop/Fliese/",
+    "relevance_score": 71,
+    "match_reason": "The company is explicitly named a 'Fliesenfachhandel' (Tile Specialist Trade) and lists numerous brands and product types like Bodenfliesen (floor tiles), Wandfliesen (wall tiles), and Mosaik. This indicates they are a specialized retailer/distributor of tiles rather than an end-user buyer, but their role is highly relevant to the industry.",
+    "contact_email": "info@linnenbecker.de",
+    "contact_phone": "+49 5222 5301 - 0",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.linnenbecker.de/Shop/Fliese/",
+      ""
+    ],
+    "company_role": "distributor",
+    "country_signals": {
+      "phone_country_code": true,
+      "domain_tld": true,
+      "text_mentions_country": false,
+      "found_on_map": true
+    },
+    "validation_confidence": "3/4"
+  },
+  {
+    "company_name": "Nordic Floors",
+    "website": "https://www.nordicfloors.de/de/article/großer-vergleich-von-bodenbelagen:-parkett-vinyl-laminat-kork-und-fliesen/10334",
+    "relevance_score": 71,
+    "match_reason": "The company appears to be a specialized retailer/supplier of flooring materials, offering various products like Vinylboden and Parkett. While they discuss tiles (Fliesen) extensively, their primary function is selling finished floor coverings and related accessories, suggesting a distribution or retail role rather than being an end-user buyer.",
+    "contact_email": "info@nordicfloors.de",
+    "contact_phone": "+49 151 61643876",
+    "contact_linkedin": null,
+    "sources_used": [
+      "https://www.nordicfloors.de/de/article/großer-vergleich-von-bodenbelagen:-parkett-vinyl-laminat-kork-und-fliesen/10334",
+      ""
+    ],
+    "company_role": "distributor",
     "country_signals": {
       "phone_country_code": true,
       "domain_tld": true,

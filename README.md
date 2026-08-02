@@ -37,7 +37,7 @@ For each company found, the pipeline returns:
 the Groq and Google Gemini free tiers are enough to run the whole pipeline
 at no cost. Alternatively, `--provider ollama` needs no key at all: install
 [Ollama](https://ollama.com), run `ollama serve`, pull a model
-(`ollama pull llama3.1:8b`), and rank with unlimited local volume — no
+(`ollama pull gemma4:e4b`), and rank with unlimited local volume — no
 rate limits, no daily quota, no cost, at the expense of your own machine's
 compute and a smaller model's judgment quality vs. a hosted one.
 
@@ -172,7 +172,7 @@ main.py (CLI) or app.py (Streamlit)
 | `main.py` | orchestrator | CLI entry point: runs every phase end-to-end for a product/country in one command |
 | `app.py` | orchestrator (6) | Streamlit dashboard: same orchestration as `main.py`, live in a browser, with CSV/JSON export and a saved-results browser |
 | `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup |
-| `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, Jina Reader fallback for JS-heavy/non-HTML pages, robots.txt enforcement, contact extraction |
+| `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, `pypdf` for local PDF text extraction, Jina Reader fallback for JS-heavy pages and PDFs with no text layer, robots.txt enforcement, contact extraction |
 | `src/mine_directories.py` | 3 (optional) | LLM extraction of company names from directory and market-research-report pages, follow-up search per name |
 | `src/rank_schema.py` | 4 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting/checkpointing — used by every provider |
 | `src/rank_engine.py` | 4 | Single CLI (`--provider {hf,openai,groq,gemini,claude,ollama}`) dispatching to the right SDK (OpenAI-compatible client for OpenAI/Groq/Gemini/Ollama, `anthropic` for Claude, `huggingface_hub` for HF), sharing `rank_schema.py` |
@@ -343,8 +343,15 @@ to a directory site once stalled for ~3 minutes despite a 5s timeout.
   English results instead. Empirically this roughly doubled useful
   candidate count on the Ceramic Tiles / Germany test run.
 - **Company websites** — scraped directly (`requests` + BeautifulSoup),
-  with a Jina Reader (`r.jina.ai`) fallback for JS-rendered pages and
-  non-HTML content (e.g. PDFs) a static fetch can't parse.
+  with a Jina Reader (`r.jina.ai`) fallback for JS-rendered pages a static
+  fetch can't parse.
+- **PDFs** (trade reports, catalogs, company profiles) — extracted locally
+  via `pypdf` directly from the fetched bytes, no external service
+  involved. Only falls back to Jina Reader if the PDF has no extractable
+  text layer at all (scanned/image-only). Previously Jina Reader was the
+  *only* path for any non-HTML content, which meant a slow or failing
+  Jina call lost a normal, digitally-generated PDF's content entirely even
+  though local extraction handles that case in milliseconds.
 - **B2B trade directories** — europages, Kompass, TradeWheel, Volza,
   ExportHub, wer-liefert-was (wlw), etc. Used two ways: as direct
   candidates (tagged `directory`, never scored as a company), and as a

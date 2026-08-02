@@ -5,10 +5,13 @@ Reads the candidate URLs produced by discovery.py, fetches each page, and
 extracts clean text plus structured signals (emails, phones, LinkedIn links)
 for the LLM reasoning stage (Phase 4).
 
-Primary path: requests + BeautifulSoup (fast, no extra infra).
-Fallback: Jina Reader (https://r.jina.ai/<url>) when the static fetch comes
-back with too little text -- a cheap way to handle JS-heavy pages without
-pulling in a headless browser.
+Primary path: requests + BeautifulSoup (fast, no extra infra). PDFs get
+their own path (requests + pypdf, extracted locally, no network round-trip
+beyond the fetch itself). Fallback for both: Jina Reader
+(https://r.jina.ai/<url>) when the static fetch comes back with too little
+text -- a cheap way to handle JS-heavy pages without pulling in a headless
+browser, and a second attempt for PDFs with no extractable text layer
+(scanned/image-only) that pypdf can't do anything with.
 
 LinkedIn and Facebook URLs are never fetched here (see discovery.py) --
 their title/snippet from search is kept as low-confidence evidence instead
@@ -22,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import re
 import threading
@@ -34,6 +38,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
 
 USER_AGENT = (
     "Mozilla/5.0 (compatible; ExporterCrawlBot/0.1; "
@@ -212,6 +217,19 @@ def fetch_via_jina(url: str, timeout: float) -> str | None:
     return None
 
 
+def extract_pdf_text(content: bytes) -> str:
+    """Extracts plain text from PDF bytes via pypdf -- local, no network
+    round-trip. Returns "" on any failure (encrypted, corrupted, or a
+    scanned/image-only PDF with no text layer at all), which the caller
+    treats as "try Jina Reader instead" rather than a hard failure."""
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        return re.sub(r"\s+", " ", text).strip()[:MAX_TEXT_CHARS]
+    except Exception:  # noqa: BLE001 - any malformed/encrypted PDF just falls through
+        return ""
+
+
 def scrape_one(candidate: dict, robots: RobotsCache, timeout: float) -> ScrapedPage:
     url = candidate["url"]
     source_type = candidate.get("source_type", "website")
@@ -282,11 +300,27 @@ def scrape_one(candidate: dict, robots: RobotsCache, timeout: float) -> ScrapedP
 
     if resp is not None:
         content_type = resp.headers.get("Content-Type", "")
-        if "text/html" not in content_type and content_type != "":
-            # Not HTML (e.g. a PDF) -- BeautifulSoup can't parse this, but
-            # Jina Reader often can (it does PDF text extraction). Treat it
-            # like a failed fetch so the fallback below gets a chance,
-            # instead of giving up immediately.
+        if "application/pdf" in content_type or url.lower().split("?")[0].endswith(".pdf"):
+            # Extract locally first -- fast, no network round-trip, and no
+            # dependency on Jina Reader being up. Previously Jina was the
+            # *only* path for PDFs, so a slow/failing Jina call lost the
+            # PDF's content entirely even though pypdf handles a normal,
+            # digitally-generated PDF (the common case -- catalogs, company
+            # profiles) in milliseconds.
+            pdf_text = extract_pdf_text(resp.content)
+            if len(pdf_text) >= MIN_TEXT_LEN_BEFORE_FALLBACK:
+                text = pdf_text
+                emails, phones = extract_contacts(pdf_text)
+            else:
+                # Scanned/image-only or encrypted PDF -- pypdf has no text
+                # layer to work with. Fall through to the Jina fallback
+                # below, which sometimes does better (e.g. OCR).
+                fetch_error = "PDF has no extractable text layer"
+                resp = None
+        elif "text/html" not in content_type and content_type != "":
+            # Not HTML and not a PDF (e.g. an image) -- nothing local can
+            # parse this; Jina Reader is the only option, via the fallback
+            # below.
             fetch_error = f"non-HTML content-type: {content_type}"
             resp = None
         else:
