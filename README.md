@@ -182,142 +182,139 @@ main.py (CLI) or app.py (Streamlit)
 
 ## Design Decisions
 
-**File-based pipeline, not a single monolithic script.** Each phase is a
-standalone CLI script that reads/writes JSON. This makes every intermediate
-result inspectable and re-runnable (e.g. re-rank already-scraped data with
-a different LLM provider without re-scraping), and keeps each stage's
-failure modes isolated. `main.py`/`app.py` sit on top as thin orchestrators
-for the common "just run the whole thing" case.
+**File-based pipeline, not a single monolithic script.**
+- Each phase is a standalone CLI script that reads/writes JSON.
+- Every intermediate result is inspectable and re-runnable — e.g. re-rank
+  already-scraped data with a different LLM provider without re-scraping.
+- Each stage's failure modes stay isolated from the others.
+- `main.py`/`app.py` sit on top as thin orchestrators for the common
+  "just run the whole thing" case.
 
-**Multiple LLM providers behind a shared interface.** `rank_schema.py`
-holds the prompt, the Pydantic output schema, the hallucination guard, and
-the ranking/filtering logic once; `rank_engine.py` picks a `--provider`
-(`hf`, `openai`, `groq`, `gemini`, `claude`, `ollama`) and dispatches to
-the right SDK — an OpenAI-compatible client for OpenAI/Groq/Gemini/Ollama,
-`anthropic` for Claude, `huggingface_hub` for HF — reusing the same
-prompt/schema either way. `ollama` needs no API key at all: it's a local
-model server (`ollama serve` + `ollama pull <model>`) that happens to
-speak the same OpenAI-compatible chat-completions format, so it drops
-into the exact same code path as the cloud providers — unlimited local
-volume with no rate limits or daily quota, at the cost of your own
-machine's compute and a smaller model's judgment quality vs. a hosted
-one. `rank_engine.get_raw_completion()` exposes the same 6-provider
-dispatch as a generic text-completion call, so the auxiliary steps (query
-localization in `discovery.py`, directory-name extraction in
-`mine_directories.py`) support the exact same provider set as ranking —
-one provider choice covers the whole pipeline, not a separate constrained
-list for auxiliary steps. This was necessary in practice — during
-development the free Hugging Face tier ran out of credits and its 7B
-model confidently misclassified a German tile *manufacturer*
-(`agrob-buchtal.de`) as a "buyer" at relevance score 85, which is exactly
-the class of error the ranking stage exists to prevent. Being able to
-switch providers (Groq's `openai/gpt-oss-120b`, Gemini, Claude, OpenAI,
-or a local Ollama model) without rewriting the pipeline logic was
-essential, not a nice-to-have.
+**Multiple LLM providers behind a shared interface.**
+- `rank_schema.py` holds the prompt, Pydantic schema, hallucination guard,
+  and ranking/filtering logic once. `rank_engine.py` picks a `--provider`
+  (`hf`, `openai`, `groq`, `gemini`, `claude`, `ollama`) and dispatches to
+  the right SDK, reusing that same prompt/schema either way.
+- Groq/Gemini/OpenAI/Ollama share one OpenAI-compatible client path;
+  Claude and Hugging Face get their own. `ollama` needs no API key —
+  it's a local model server that happens to speak the same
+  OpenAI-compatible format, so it drops into the identical code path as
+  the cloud providers: unlimited local volume, no rate limits or daily
+  quota, at the cost of your machine's compute and weaker judgment
+  quality than a hosted frontier model.
+- `get_raw_completion()` exposes the same 6-provider dispatch as a plain
+  text-completion call, so query localization and directory-name
+  extraction support the exact same provider set as ranking — one
+  provider choice covers the whole pipeline.
+- Why this mattered in practice: the free Hugging Face tier ran out of
+  credits mid-development, and its 7B model confidently misclassified a
+  German tile *manufacturer* (`agrob-buchtal.de`) as a "buyer" at
+  relevance score 85 — exactly the error class ranking exists to catch.
+  Switching providers without rewriting pipeline logic was essential.
 
-**Incremental checkpointing, not save-at-the-end.** Phase 4 ranking can run
-for hours across hundreds of pages, and a single provider outage,
-interruption, or exhausted daily quota partway through used to mean the
-entire run's output was lost. `rank_companies()` now writes the current
-best-known results to disk after *every* qualifying judgment, so the
-results file always reflects real progress, not just a completed run.
+**Incremental checkpointing, not save-at-the-end.**
+- Phase 4 ranking can run for hours across hundreds of pages.
+- A provider outage, interruption, or exhausted daily quota partway
+  through used to mean the entire run's output was lost.
+- `rank_companies()` now writes current best-known results to disk after
+  *every* qualifying judgment — the results file always reflects real
+  progress, not just a completed run.
 
-**Fail fast on unrecoverable rate limits, rotate keys if available.** A
-per-minute rate limit is worth retrying with backoff; a daily-quota rate
-limit is not — retrying still fails identically on every one of the
-remaining pages, burning wall-clock time for nothing.
-`rank_engine.is_hard_rate_limit()` pattern-matches provider error messages
-for daily/quota language (seen in practice on Groq's "tokens per day"
-limit) and raises a distinct `HardRateLimitError`. If only one API key is
-configured, `rank_companies()` catches this and stops the run immediately,
-returning whatever's already been checkpointed instead of grinding through
-certain-to-fail retries on everything left. If more than one key is
-configured (see below), it instead switches to the next key and retries
-the *same* page, so one free-tier key running dry partway through a long
-run doesn't waste every remaining page — it only stops for real once every
-configured key has hit its daily quota.
+**Fail fast on unrecoverable rate limits, rotate keys if available.**
+- A per-minute rate limit is worth retrying with backoff; a daily-quota
+  limit isn't — retrying fails identically on every remaining page.
+- `is_hard_rate_limit()` pattern-matches provider errors for daily/quota
+  language (seen on Groq's "tokens per day" limit) and raises a distinct
+  `HardRateLimitError`.
+- One key configured → the run stops immediately, returning whatever's
+  already checkpointed instead of grinding through certain-to-fail
+  retries.
+- More than one key configured → switches to the next key and retries
+  the *same* page, so one free-tier key running dry doesn't waste every
+  remaining page. Only stops for real once every key is exhausted.
 
-**Multiple API keys, round-robin on quota exhaustion.** Free-tier daily
-token quotas (e.g. Groq) are the most common practical wall a long
-discovery run hits. Any provider's env var (`GROQ_API_KEY`, etc.) accepts
-a comma-separated list of keys — `GROQ_API_KEY=key_one,key_two` — and
-`rank_engine.build_key_rotator()` builds a judge function per key on
-demand, handed to `rank_companies()` as `next_judge_fn`. A single key
-still behaves exactly as before (`next_judge_fn` immediately returns
-`None`, so there's nothing to opt into or configure specially). The
-Streamlit app's API key field and `main.py`/`rank_engine.py`'s `--api-key`
-flag accept the same comma-separated format.
+**Multiple API keys, round-robin on quota exhaustion.**
+- Free-tier daily token quotas are the most common practical wall a long
+  run hits. Any provider's env var accepts a comma-separated list of
+  keys — `GROQ_API_KEY=key_one,key_two`.
+- `build_key_rotator()` builds a judge function per key on demand, handed
+  to `rank_companies()` as `next_judge_fn`.
+- A single key behaves exactly as before — nothing to opt into.
+- The Streamlit app's API key field and `--api-key` flag accept the same
+  comma-separated format.
 
-**Domain classification at discovery time.** Every discovered URL is
-tagged `website` / `directory` / `report` / `noise` / `social` based on its
-domain (see `NOISE_DOMAINS`, `DIRECTORY_DOMAINS`, `REPORT_DOMAINS`,
-`SOCIAL_DOMAINS` in `discovery.py`). This determines how each URL is
-treated downstream: directories and reports are scraped normally in Phase
-2 but never scored as if they were a company in Phase 4 -- instead they're
-candidate input for Phase 3's mining step, which extracts real company
-names mentioned on the page (buyers/importers/distributors for a
-directory; "key players"/"competitive landscape" for a report) and
-searches for each one's own site. Noise domains (Pinterest, Etsy, etc.)
-are skipped before ever making a network request -- there's no company
-name worth mining out of a Pinterest board. LinkedIn and Facebook are
-never fetched at all, but unlike pure noise, their search-result
-title/snippet is still kept as low-confidence evidence -- a real business
-(especially a smaller importer/wholesaler) can have its primary or only
-presence on one of these rather than a dedicated website, and discarding
-those entirely would lose real leads, not just noise.
+**Domain classification at discovery time.**
+- Every discovered URL is tagged `website` / `directory` / `report` /
+  `noise` / `social` by domain (`NOISE_DOMAINS`, `DIRECTORY_DOMAINS`,
+  `REPORT_DOMAINS`, `SOCIAL_DOMAINS` in `discovery.py`).
+- Directories and reports are scraped normally but never scored as a
+  company — instead they feed Phase 3's mining step, which extracts real
+  company names (buyers/importers for a directory; "key players" for a
+  report) and searches for each one's own site.
+- Noise domains (Pinterest, Etsy, etc.) are skipped before any network
+  request — there's no company name worth mining out of a Pinterest
+  board.
+- LinkedIn and Facebook are never fetched, but their search-result
+  title/snippet is kept as low-confidence evidence — a smaller
+  importer/wholesaler can have its *only* presence on one of these, and
+  discarding that entirely would lose a real lead, not just noise.
 
-**LinkedIn is never scraped.** LinkedIn requires login for nearly all
-content and actively fights automated access; scraping it violates its
-ToS regardless of `robots.txt`. Instead, a dedicated search query
-(`site:linkedin.com/company ...`) captures each company's LinkedIn URL
-directly from search-engine results — the URL is used as-is for the
-"Contact LinkedIn" field, and the page itself is never fetched.
+**LinkedIn is never scraped.**
+- LinkedIn requires login for nearly all content and actively fights
+  automated access; scraping it violates ToS regardless of `robots.txt`.
+- Instead, a dedicated search query (`site:linkedin.com/company ...`)
+  captures each company's LinkedIn URL directly from search results — used
+  as-is for the "Contact LinkedIn" field, page itself never fetched.
 
-**`robots.txt` is respected, not negotiated around.** Where it disallows
-access, the scraper does not fetch the page — but it also doesn't throw
-that candidate away entirely. The search engine already crawled it under
-its own identity and gave us a title/snippet; that gets passed to the LLM
-as clearly-labeled, low-confidence evidence (the `snippet_only` status —
-same treatment as LinkedIn). Sites using active bot-detection
-(Cloudflare/Vercel challenge pages, WAF 403s) are left alone entirely —
-even where `robots.txt` technically permits access, defeating a bot
-challenge is a form of access-control circumvention this project
-deliberately avoids. See [Assumptions & Limitations](#assumptions--limitations).
+**`robots.txt` is respected, not negotiated around.**
+- Where it disallows access, the scraper doesn't fetch the page — but
+  doesn't discard the candidate either. The search engine already
+  crawled it under its own identity, and that title/snippet becomes
+  clearly-labeled, low-confidence evidence (`snippet_only` — same
+  treatment as LinkedIn).
+- Sites with active bot-detection (Cloudflare/Vercel challenges, WAF
+  403s) are left alone entirely, even where `robots.txt` technically
+  permits access — defeating a bot challenge is access-control
+  circumvention, and this project deliberately avoids that. See
+  [Assumptions & Limitations](#assumptions--limitations).
 
-**Hallucination-guarded contact extraction.** The scraper extracts
-emails/phones/LinkedIn links from each page independently via regex and
-`mailto:`/`tel:` parsing. When the LLM proposes a contact value in Phase 4,
-it's checked against that independently-extracted list — a value the LLM
-invents that wasn't actually found on the page is silently dropped rather
-than trusted. This is the main defense against the LLM fabricating a
-plausible-looking but fake email or phone number.
+**Hallucination-guarded contact extraction.**
+- The scraper extracts emails/phones/LinkedIn links from each page
+  independently, via regex and `mailto:`/`tel:` parsing.
+- When the LLM proposes a contact value, it's checked against that
+  independently-extracted list — anything the LLM invents that wasn't
+  actually found on the page is silently dropped, not trusted.
+- This is the main defense against a plausible-looking but fake email or
+  phone number.
 
-**An explicit scoring rubric, not a free-floating 0–100.** Early runs
-showed scores clustering on arbitrary low round numbers (5, 10, 15, 20)
-with no clear separation between "wrong role" and "right role, weak
-evidence." The prompt now spells out what each band means (0–10 wrong
-role/no evidence, 11–30 wrong role with tangential relevance, 31–50
-plausible but indirect evidence, 51–70 direct evidence, 71–90 strong
-explicit evidence, 91–100 unambiguous multi-signal match), and ranking
-calls use `temperature=0` wherever the provider allows it (Claude's
-current models reject a non-default temperature entirely, so the rubric
-is the only determinism lever there).
+**An explicit scoring rubric, not a free-floating 0–100.**
+- Early runs showed scores clustering on arbitrary low round numbers (5,
+  10, 15, 20) with no clear line between "wrong role" and "right role,
+  weak evidence."
+- The prompt now spells out what each band means: 0–10 wrong role/no
+  evidence, 11–30 wrong role with tangential relevance, 31–50 plausible
+  but indirect evidence, 51–70 direct evidence, 71–90 strong explicit
+  evidence, 91–100 unambiguous multi-signal match.
+- Ranking calls use `temperature=0` wherever the provider allows it —
+  Claude's current models reject a non-default temperature entirely, so
+  the rubric is the only determinism lever there.
 
 **Deterministic validation layered on top of the LLM, not replacing it.**
-Phase 5 doesn't re-score or re-rank anything — it adds a
-`country_signals` breakdown and a `validation_confidence` count as
-supplementary evidence for a human reviewer. A legitimate importer can
-still fail every heuristic (generic `.com` domain, toll-free number), so
-this is corroboration, not a filter.
+- Phase 5 doesn't re-score or re-rank anything — it adds a
+  `country_signals` breakdown and a `validation_confidence` count as
+  supplementary evidence for a human reviewer.
+- A legitimate importer can still fail every heuristic (generic `.com`
+  domain, toll-free number), so this is corroboration, not a filter.
 
-**Hard wall-clock timeouts on every network call.** `requests`' own
-`timeout=` parameter only bounds each individual read, not a call's total
-wall-clock time — a server trickling bytes slowly (or a DNS/TCP-level
-stall) can block far past the configured timeout. Every HTTP call in
-`scraper.py` goes through `_get_with_hard_timeout()`, which runs the
-request in a daemon thread and enforces a real wall-clock cap via
-`Thread.join()`. This was found empirically: a single `robots.txt` fetch
-to a directory site once stalled for ~3 minutes despite a 5s timeout.
+**Hard wall-clock timeouts on every network call.**
+- `requests`' own `timeout=` only bounds each individual read, not a
+  call's total wall-clock time — a server trickling bytes slowly (or a
+  DNS/TCP-level stall) can block far past the configured timeout.
+- Every HTTP call in `scraper.py` goes through `_get_with_hard_timeout()`,
+  which runs the request in a daemon thread and enforces a real
+  wall-clock cap via `Thread.join()`.
+- Found empirically: a single `robots.txt` fetch to a directory site once
+  stalled ~3 minutes despite a 5s timeout.
 
 ---
 
@@ -373,27 +370,28 @@ to a directory site once stalled for ~3 minutes despite a 5s timeout.
   genuine B2B buyers, since exhibitor/visitor lists are companies
   actively engaged with the product category in that market.
 - **LinkedIn and Facebook company URLs** — sourced via search only
-  (`site:linkedin.com/company`, and Facebook Pages/Marketplace results that
-  turn up organically). Neither platform's own page is ever fetched
-  (login-walled, against their ToS), but the search engine's title/snippet
-  is kept as low-confidence evidence — useful for a company whose only real
-  presence is a LinkedIn page or Facebook Page, not a separate website. This
-  matters more for smaller importers/wholesalers/traders than it might seem:
-  many run their entire public presence on one of these platforms with no
-  dedicated site at all, and dropping them as "noise" (Facebook's original
-  classification) silently excluded genuine leads.
+  (`site:linkedin.com/company`, plus Facebook Pages/Marketplace results
+  that turn up organically).
+  - Neither platform's own page is ever fetched (login-walled, against
+    their ToS) — the search engine's title/snippet is kept as
+    low-confidence evidence instead.
+  - Matters more than it might seem: many smaller importers/wholesalers
+    run their entire public presence on one of these with no dedicated
+    site at all. Dropping them as "noise" (Facebook's original
+    classification) silently excluded genuine leads.
 - **Adaptive query expansion** — if the initial round of queries (English +
   localized + directory `site:` queries) turns up fewer than a configurable
-  minimum number of genuine (website/social) candidates, an LLM is asked for
-  new queries that deliberately avoid repeating what's already been tried —
-  prioritizing alternate product terminology, trade fairs/expos/industry
-  associations, and local directories or chambers of commerce specific to
-  the target country. This repeats for a capped number of rounds (default 2)
-  and stops early if the threshold is met or the LLM has nothing new to
-  suggest, so it never turns into an unbounded retry loop. Configurable via
-  `--min-candidates`/`--max-expansion-rounds` on `main.py`/`discovery.py`, or
-  the "Min genuine candidates before expanding search" control in the
-  Streamlit app's Advanced section.
+  minimum of genuine (website/social) candidates, an LLM is asked for new
+  queries that deliberately avoid repeating what's already been tried.
+  - Prioritizes alternate product terminology, trade fairs/expos/industry
+    associations, and local directories or chambers of commerce specific
+    to the target country.
+  - Capped at a configurable number of rounds (default 2), and stops
+    early if the threshold is met or the LLM has nothing new to suggest —
+    never an unbounded retry loop.
+  - Configurable via `--min-candidates`/`--max-expansion-rounds` on
+    `main.py`/`discovery.py`, or the "Min genuine candidates before
+    expanding search" control in the Streamlit app's Advanced section.
 - **OpenStreetMap Nominatim** — free geocoding (no API key) used in Phase 5
   to check whether a company name resolves to a real location in the
   target country.
@@ -484,5 +482,51 @@ If Phase 5 validation is run, each surviving company additionally gets:
 
 ## Sample Results
 
-_Pending — three product–country combinations are required for the final
-submission; sample runs will be added here once available._
+Four real runs (`--provider groq`, `--mine-directories`, defaults otherwise).
+Top 3 by score shown per combo — full output (all 8 required fields, plus
+Phase 5 validation) is in `data/results_*.json` / `data/validated_*.json`.
+
+### Auto Components → Germany (6 results)
+
+| Company | Website | Score | Why |
+|---|---|---|---|
+| Autohelden | [focus.de article](https://www.focus.de/auto/elektroauto/importeur-will-xiaomi-elektroautos-nach-deutschland-holen_d69ad792-2c92-4541-8695-7afe4b205385.html) | 91 | Named as "Der Importeur Autohelden," bringing Chinese brands (Xiaomi, Zeekr, Jetour) into Germany |
+| intercars.de | [intercars.de](https://intercars.de/) | 71 | Self-identifies as "Europas führenden Großhändler für Pkw- und Nutzfahrzeugteile" (Europe's leading wholesaler for vehicle parts) |
+| NAPA Deutschland | [LinkedIn](https://de.linkedin.com/company/napa-deutschland) | 71 | Listed as "Großhandel" (wholesale) for brakes, shock absorbers, and other components |
+
+### Ceramic Tiles → Germany (10 results)
+
+| Company | Website | Score | Why |
+|---|---|---|---|
+| Aug. Höhne Söhne | [hoehnesoehne.de](https://hoehnesoehne.de/) | 91 | Self-identifies as "Fliesen Großhandel" (tile wholesaler) with a broad multi-manufacturer portfolio |
+| Chiemgauer Fliesenzentrum | [chiemgauer-fliesenzentrum.de](https://chiemgauer-fliesenzentrum.de/) | 91 | Online shop with own warehouse, listing tile brands (Savoia, Isla Tiles, Ariana Ceramica) with prices |
+| Rothkegel BauFachhandel | [rothkegel-baufachhandel.de](https://www.rothkegel-baufachhandel.de/sortiment/fliesen/) | 91 | Large tile selection for bathroom/terrace applications, explicit distributor role |
+
+### Gems & Jewellery → United Arab Emirates (5 results)
+
+| Company | Website | Score | Why |
+|---|---|---|---|
+| GEMSMETAL | [gemsmetalcommodities.com](https://gemsmetalcommodities.com/) | 85 | Self-describes as "trading and distribution" of precious metals & pearls |
+| Coral Gold Jewellers Trading | [yello.ae listing](https://www.yello.ae/company/192341/coral-gold-jewellers-trading) | 51 | Jewellery trading company in Sharjah; page doesn't explicitly state buy vs. sell side (lower score reflects that) |
+| Kraft Gems Jewelry Trading LLC | [LinkedIn](https://ae.linkedin.com/in/jayesh-yadav-47750452) | 51 | Dubai-based, "Gems Jewelry Trading" in the name — LinkedIn-only presence, snippet-level evidence |
+
+### Pharmaceuticals (Generic Drugs) → United Kingdom (8 results)
+
+| Company | Website | Score | Why |
+|---|---|---|---|
+| NSL Group | [nslgroup.co.uk](https://www.nslgroup.co.uk/) | 91 | Self-identifies as "Pharmaceutical Wholesaler & Distributor," supplying pharmacies and wholesalers |
+| Clydesdale Pharma Ltd | [clydesdalepharma.com](https://www.clydesdalepharma.com/suppliers) | 91 | Self-identifies as "Pharmaceutical wholesaler," UK-based, dedicated suppliers page |
+| Nelson Pharmaceuticals | [nelsonpharma.co.uk](https://nelsonpharma.co.uk/) | 91 | Explicit "UK Pharmaceutical Import & Distribution" role in page content |
+
+A couple of honest observations from these four runs, not just the highlights:
+
+- The Auto Components top hit is a news article *about* an importer, not the
+  importer's own site — legitimate evidence (the article names and quotes
+  the company), but a reminder that `Website` in the output is "the page
+  that was judged," not necessarily "the company's homepage."
+- Lower scores (UAE's 51s) show the rubric working as intended: real
+  buyer-side signal, but thin/inferred evidence gets a mid score instead of
+  a confident 90, exactly per the [Ranking Methodology](#ranking-methodology).
+- Result counts vary a lot by market (5 for UAE jewellery vs. 10 for German
+  tiles) — a smaller, more specialized product/country pairing naturally
+  surfaces fewer genuine buyer-side pages than a broad, mature market.
