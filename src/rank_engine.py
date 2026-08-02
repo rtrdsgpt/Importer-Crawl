@@ -10,10 +10,10 @@ Every provider shares the same prompt, schema, and hallucination-guard
 logic in rank_schema.py.
 
 Ollama needs no API key (it's a local server) -- install it, run
-`ollama serve`, `ollama pull llama3.1:8b` (or override --model), then
+`ollama serve`, `ollama pull gemma4:e4b` (or override --model), then
 --provider ollama. No rate limits, no daily quota, no cost, unlimited
 volume; the tradeoff is your own machine supplies the compute and a
-7-8B local model won't match a hosted frontier model's judgment quality.
+small local model won't match a hosted frontier model's judgment quality.
 
 Usage:
     export GROQ_API_KEY=gsk_...   # or OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / HF_TOKEN
@@ -96,13 +96,24 @@ PROVIDER_CONFIGS = {
         # Ollama's OpenAI-compatible endpoint (docs.ollama.com/api/
         # openai-compatibility) requires *a* non-empty api_key string --
         # its own docs list it as "required but ignored" -- there's no
-        # real auth for a local server. placeholder_key (see
-        # resolve_api_key() below) lets every "if not api_key: error out"
-        # check elsewhere in the pipeline fall back to this instead of
-        # demanding a credential that doesn't exist for local use. No rate
-        # limits, no daily quota, no cost -- the tradeoff is you supply the
-        # compute and must `ollama pull` the model yourself first.
-        "default_model": "llama3.1:8b", "max_tokens": 500,
+        # real auth for a local server. placeholder_key lets every
+        # "if not api_key: error out" check elsewhere in the pipeline
+        # (main.py, app.py, discovery.py, mine_directories.py) fall back
+        # to this instead of demanding a credential that doesn't exist for
+        # local use. No rate limits, no daily quota, no cost -- the
+        # tradeoff is you supply the compute and must `ollama pull` the
+        # model yourself first.
+        #
+        # max_tokens=4096, not the 500 other providers get: gemma4:e4b
+        # (`ollama show gemma4:e4b` lists "thinking" as a capability) is a
+        # reasoning model like Groq's gpt-oss-120b above -- hidden
+        # chain-of-thought tokens eat the budget before any visible JSON
+        # comes out. Reproduced directly against 3 real pages that were
+        # failing with "model returned empty content": at max_tokens=500
+        # every one hit finish_reason="length" with a fully-consumed
+        # budget and zero visible content; at 4096 all three succeeded
+        # (finish_reason="stop") using well under the cap.
+        "default_model": "gemma4:e4b", "max_tokens": 4096,
         "placeholder_key": "ollama",
     },
 }
@@ -216,9 +227,16 @@ def judge_openai_compatible(
             time.sleep(wait)
         except (ValueError, json.JSONDecodeError, ValidationError) as exc:
             last_error = exc
+            # Include the actual error, not just "invalid" -- a response can
+            # be syntactically valid JSON but fail a schema constraint (wrong
+            # enum value, wrong type for a field), and a generic "not valid
+            # JSON" message gives the model nothing to correct, so it just
+            # repeats the same mistake on every retry. Seen in practice: a
+            # local model kept returning company_role="seller" (not in the
+            # enum) three times in a row against the generic message.
             messages.append({"role": "user", "content": (
-                "Your previous response was not valid JSON matching the schema. "
-                "Respond with ONLY the JSON object, nothing else."
+                f"Your previous response failed schema validation: {exc}\n"
+                "Respond with ONLY a corrected JSON object, nothing else."
             )})
             print(f"  ! bad output from model ({exc}); retrying...")
 
@@ -265,8 +283,8 @@ def judge_claude(
             last_error = exc
             messages.append({"role": "assistant", "content": "(invalid JSON response)"})
             messages.append({"role": "user", "content": (
-                "Your previous response was not valid JSON matching the schema. "
-                "Respond with ONLY the JSON object, nothing else."
+                f"Your previous response failed schema validation: {exc}\n"
+                "Respond with ONLY a corrected JSON object, nothing else."
             )})
             print(f"  ! bad output from model ({exc}); retrying...")
 
@@ -304,8 +322,8 @@ def judge_hf(
         except (ValueError, json.JSONDecodeError, ValidationError) as exc:
             last_error = exc
             messages.append({"role": "user", "content": (
-                "Your previous response was not valid JSON matching the schema. "
-                "Respond with ONLY the JSON object, nothing else."
+                f"Your previous response failed schema validation: {exc}\n"
+                "Respond with ONLY a corrected JSON object, nothing else."
             )})
             print(f"  ! bad output from model ({exc}); retrying...")
 
@@ -384,6 +402,14 @@ def main() -> None:
                               "one key's daily quota runs out, e.g. 'key1,key2'.")
     parser.add_argument("--delay", type=float, default=0.5, help="Delay between LLM calls (s)")
     parser.add_argument("--output", default=None, help="Output JSON path")
+    parser.add_argument("--start-index", type=int, default=1,
+                         help="Resume judging from this position (1-indexed, matching the "
+                              "[i/N] progress log a prior run printed) instead of the first "
+                              "eligible page -- for continuing a run that was cut off (e.g. "
+                              "every configured key's daily quota ran out) with a different "
+                              "--provider/--model. Already-qualifying results in the existing "
+                              "--output file are preserved, not overwritten (default: 1, i.e. "
+                              "start from the beginning).")
     args = parser.parse_args()
 
     config = PROVIDER_CONFIGS[args.provider]
@@ -401,12 +427,24 @@ def main() -> None:
     pages = json.loads(input_path.read_text(encoding="utf-8"))
     output_path = rc.default_output_path(input_path, args.output)
 
+    resume_from = None
+    if args.start_index > 1:
+        resume_from = []
+        if output_path.exists():
+            existing = json.loads(output_path.read_text(encoding="utf-8"))
+            resume_from = [rc.RankedCompany.model_validate(d) for d in existing]
+        print(
+            f"--start-index {args.start_index}: preserving {len(resume_from)} "
+            f"already-qualifying result(s) from {output_path} instead of overwriting them"
+        )
+
     judge_fn, next_judge_fn = build_key_rotator(args.provider, model, api_keys)
 
     ranked = rc.rank_companies(
         pages, product=args.product, country=args.country, judge_fn=judge_fn,
         top_n=args.top_n, min_score=args.min_score, delay_seconds=args.delay,
         checkpoint_path=output_path, next_judge_fn=next_judge_fn,
+        start_index=args.start_index, resume_from=resume_from,
     )
     rc.save_ranked(ranked, output_path)
     rc.print_summary(ranked, args.min_score, output_path)
