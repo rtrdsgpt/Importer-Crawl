@@ -1,6 +1,6 @@
 ddgs>=9.0
 requests>=2.31
-beautifulsoup4>=4.12
+beautifulsoup4>=4.15.0
 lxml>=4.9
 pypdf>=5.0
 huggingface_hub>=0.27
