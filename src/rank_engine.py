@@ -31,7 +31,6 @@ import argparse
 import json
 import os
 import time
-from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 

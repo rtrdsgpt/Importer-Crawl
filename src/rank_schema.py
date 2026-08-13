@@ -332,8 +332,8 @@ def rank_companies(
                 if new_judge_fn is not None:
                     judge_fn = new_judge_fn
                     rotate_msg = (
-                        f"  ! hard rate limit (daily quota) hit on this key; switching to "
-                        f"the next API key and retrying this page"
+                        "  ! hard rate limit (daily quota) hit on this key; switching to "
+                        "the next API key and retrying this page"
                     )
                     print(rotate_msg, flush=True)
                     if on_progress:
