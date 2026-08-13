@@ -24,6 +24,8 @@ For each company found, the pipeline returns:
 - [Design Decisions](#design-decisions)
 - [Data Sources](#data-sources)
 - [Ranking Methodology](#ranking-methodology)
+- [Agentic Framing](#agentic-framing)
+- [Testing & CI](#testing--ci)
 - [Assumptions & Limitations](#assumptions--limitations)
 - [Sample Results](#sample-results)
 
@@ -33,18 +35,19 @@ For each company found, the pipeline returns:
 
 ### Setup
 
-**Prerequisites:** Python 3.11+, and at least one LLM provider API key —
-the Groq and Google Gemini free tiers are enough to run the whole pipeline
-at no cost. Alternatively, `--provider ollama` needs no key at all: install
-[Ollama](https://ollama.com), run `ollama serve`, pull a model
-(`ollama pull gemma4:e4b`), and rank with unlimited local volume — no
-rate limits, no daily quota, no cost, at the expense of your own machine's
-compute and a smaller model's judgment quality vs. a hosted one.
+**Prerequisites:** Python 3.11+ (or Docker — see Option E below), and at
+least one LLM provider API key — the Groq and Google Gemini free tiers are
+enough to run the whole pipeline at no cost. Alternatively, `--provider
+ollama` needs no key at all: install [Ollama](https://ollama.com), run
+`ollama serve`, pull a model (`ollama pull gemma4:e4b`), and rank with
+unlimited local volume — no rate limits, no daily quota, no cost, at the
+expense of your own machine's compute and a smaller model's judgment
+quality vs. a hosted one.
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt        # or requirements-dev.txt for pytest/ruff too
 ```
 
 Copy `.env.example` to `.env` and fill in whichever provider(s) you plan
@@ -123,6 +126,62 @@ python src/rank_engine.py --input data/scraped_ceramic_tiles_germany.json \
 python src/validate.py --input data/results_ceramic_tiles_germany.json --country "Germany"
 ```
 
+### Option D: FastAPI service
+
+```bash
+uvicorn api:app --reload
+```
+
+`POST /discover` runs the same pipeline as `main.py`'s `run_pipeline()`
+(same phases, same incremental checkpointing to `data/`) in a background
+thread and returns a job id immediately, since a run can take minutes to
+hours. Poll `GET /jobs/{job_id}` for status and progress, then
+`GET /jobs/{job_id}/results` once it's `completed`.
+
+```bash
+curl -X POST localhost:8000/discover \
+    -H 'content-type: application/json' \
+    -d '{"product": "Ceramic Tiles", "country": "Germany", "provider": "groq"}'
+# => {"job_id": "...", "status": "pending"}
+
+curl localhost:8000/jobs/<job_id>              # status + last 20 progress lines
+curl localhost:8000/jobs/<job_id>/results      # 409 until status is "completed"
+```
+
+Full request schema (every `main.py` flag has a matching JSON field) is at
+`localhost:8000/docs` (Swagger UI) once the server is running. `api_key`
+in the request body accepts the same comma-separated multi-key format as
+`--api-key`; if omitted, falls back to the server's own environment.
+
+### Option E: Docker
+
+```bash
+docker build -t exporter-crawl .
+docker run --rm --env-file .env -p 8000:8000 -v "$(pwd)/data:/app/data" exporter-crawl
+```
+
+Runs the FastAPI service (Option D) by default. The same image has every
+other entry point's dependencies too -- override the command to run the
+CLI, Streamlit app, or MCP server instead:
+
+```bash
+docker run --rm --env-file .env -v "$(pwd)/data:/app/data" exporter-crawl \
+    python main.py --product "Ceramic Tiles" --country Germany --provider groq
+docker run --rm --env-file .env -p 8501:8501 exporter-crawl \
+    streamlit run app.py --server.address 0.0.0.0
+```
+
+### Option F: MCP server
+
+```bash
+python mcp_server.py
+```
+
+Exposes `search-importers` (Discovery + Scraping) and `rank-candidates`
+(Phase 4 ranking) as MCP tools over stdio, for an MCP-aware agent to call
+directly instead of going through the CLI/API. See
+[Agentic Framing](#agentic-framing) below.
+
 ---
 
 ## Architecture
@@ -171,12 +230,16 @@ main.py (CLI) or app.py (Streamlit)
 |---|---|---|
 | `main.py` | orchestrator | CLI entry point: runs every phase end-to-end for a product/country in one command |
 | `app.py` | orchestrator (6) | Streamlit dashboard: same orchestration as `main.py`, live in a browser, with CSV/JSON export and a saved-results browser |
-| `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup |
+| `api.py` | orchestrator | FastAPI wrapper: `POST /discover` + job-status/results endpoints around `main.py`'s `run_pipeline()`, run in a background thread per job |
+| `mcp_server.py` | orchestrator | MCP server exposing `search-importers` (Phases 1-2) and `rank-candidates` (Phase 4) as agent-callable tools — see [Agentic Framing](#agentic-framing) |
+| `src/discovery.py` | 1 | Query generation (English + localized), DuckDuckGo search via `ddgs`, domain classification, dedup, bounded-retry adaptive query expansion |
 | `src/scraper.py` | 2 | `requests` + BeautifulSoup scraping, `pypdf` for local PDF text extraction, Jina Reader fallback for JS-heavy pages and PDFs with no text layer, robots.txt enforcement, contact extraction |
 | `src/mine_directories.py` | 3 (optional) | LLM extraction of company names from directory and market-research-report pages, follow-up search per name |
 | `src/rank_schema.py` | 4 | Shared prompt, Pydantic schemas, hallucination-guarded contact validation, ranking/sorting/checkpointing — used by every provider |
 | `src/rank_engine.py` | 4 | Single CLI (`--provider {hf,openai,groq,gemini,claude,ollama}`) dispatching to the right SDK (OpenAI-compatible client for OpenAI/Groq/Gemini/Ollama, `anthropic` for Claude, `huggingface_hub` for HF), sharing `rank_schema.py` |
 | `src/validate.py` | 5 (optional) | Deterministic country-presence signals (phone code, TLD, text mention, free OSM geocoding) |
+| `src/tracing.py` | cross-cutting | Structured JSON phase-span logging (start/end/duration/status per pipeline phase), wrapped around each phase in `main.py`'s `run_pipeline()` |
+| `tests/` | — | pytest suite for `rank_schema.py`'s hallucination guard, `discovery.py`'s domain classifier, and `validate.py`'s deterministic checks — see [Testing & CI](#testing--ci) |
 
 ---
 
@@ -316,6 +379,21 @@ main.py (CLI) or app.py (Streamlit)
 - Found empirically: a single `robots.txt` fetch to a directory site once
   stalled ~3 minutes despite a 5s timeout.
 
+**Structured phase tracing, not just per-item print statements.**
+- Every stage already prints/`on_progress`'s a "[i/N] doing thing" line per
+  item (candidate, page, company) — useful for a human watching a run live,
+  but not something a log aggregator can key off of to answer "how long did
+  Ranking take on run X" or "which phase failed."
+- `src/tracing.py`'s `span()` context manager wraps each of the five phases
+  in `main.py`'s `run_pipeline()` and emits one structured JSON line to
+  stderr on entry and exit — phase name, timestamp, and on exit,
+  `duration_seconds` and `status` (`ok`/`error`).
+- Deliberately not a full OpenTelemetry SDK integration: this is a
+  single-process, run-once-per-invocation pipeline, not a distributed
+  service with spans to correlate across processes — a JSON-lines log is
+  enough to `grep`/`jq` or feed into an aggregator, without a new hard
+  dependency for it.
+
 ---
 
 ## Data Sources
@@ -437,6 +515,90 @@ If Phase 5 validation is run, each surviving company additionally gets:
   mention the target country?
 - `found_on_map` — does an OSM Nominatim search for the company name +
   country return a result?
+
+---
+
+## Agentic Framing
+
+Discovery's adaptive query expansion (`discover()` in `src/discovery.py`,
+`--min-candidates`/`--max-expansion-rounds`) is, explicitly, a bounded-retry
+agentic loop: an LLM call in the loop, a check against a goal condition, and
+a hard iteration cap so it can't run away.
+
+```
+run initial queries
+loop (up to max_expansion_rounds times):
+    if genuine candidate count >= min_candidates: stop -- goal met
+    ask the LLM for new queries genuinely different from what's been tried
+    if the LLM returns nothing usable: stop -- no path forward
+    run the new queries, merge into the candidate set
+return whatever was found
+```
+
+This was originally written and described purely as a discovery-quality
+feature (see [Data Sources](#data-sources)'s "Adaptive query expansion"),
+but the shape is the same as any bounded agentic retry loop: a goal
+condition (`min_candidates`), an action that can change the state
+(new queries -> new candidates), and a termination guarantee that doesn't
+depend on the LLM behaving well (`max_expansion_rounds`, plus stopping
+immediately if a round adds no new queries). Nothing about the code changed
+for this framing — `generate_supplementary_queries()` already refuses to
+just repeat prior queries (it's given the full list of what's already been
+tried and asked to approach the problem "from genuinely different angles"),
+which is the same shape as an agent reflecting on a failed attempt before
+retrying.
+
+**MCP tools.** `mcp_server.py` exposes this same pipeline as two MCP tools
+an agent can call directly, rather than only through the CLI/API:
+
+- **`search-importers`**(`product`, `country`, ...) — runs Phases 1-2
+  (Discovery, including the agentic query-expansion loop above, then
+  Scraping) and returns scraped candidate pages.
+- **`rank-candidates`**(`pages`, `product`, `country`, `provider`, ...) —
+  runs Phase 4 (LLM judging + the hallucination guard) over a set of
+  scraped pages and returns ranked results.
+
+The two are deliberately separate, composable tools rather than one
+do-everything call: an agent can inspect/filter `search-importers`' output
+before ranking, re-rank the same pages with a different provider without
+re-searching, or skip discovery entirely and hand `rank-candidates` its own
+page set. This mirrors the file-based-stages design described in
+[Design Decisions](#design-decisions) — each phase re-runnable and
+inspectable on its own — just exposed as tool calls instead of JSON files
+on disk.
+
+---
+
+## Testing & CI
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+ruff check .
+```
+
+`tests/` covers the three purely-deterministic pieces of the pipeline —
+the parts where "correct" has a definite answer independent of any LLM's
+output, so behavior can be locked down without mocking a model:
+
+- `test_rank_schema.py` — the hallucination guard in `to_ranked_company()`
+  (a proposed contact value is only kept if the scraper actually found that
+  exact value on the page, otherwise it falls back to the first
+  scraper-found value or `None`), `LLMJudgment`'s list-to-string
+  coercion, `eligible_pages()` filtering, and `extract_json_object()`.
+- `test_discovery.py` — `classify_domain()`'s `website`/`directory`/
+  `report`/`social`/`noise` classification, including subdomain matching
+  and lookalike-domain edge cases.
+- `test_validate.py` — the deterministic country-presence checks (phone
+  calling code, ccTLD, text mention) and confidence-count aggregation, with
+  the OSM Nominatim lookup disabled (`use_map_lookup=False`) so tests don't
+  depend on network access.
+
+`.github/workflows/ci.yml` runs `ruff check .` and the full `pytest` suite
+on every push/PR to `main`. `pyproject.toml` scopes the lint rules to
+correctness (unused imports/names, undefined names) rather than style
+modernization, so CI catches real bugs without demanding a full-codebase
+reformat.
 
 ---
 

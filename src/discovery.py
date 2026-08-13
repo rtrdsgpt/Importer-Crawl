@@ -22,7 +22,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
 from ddgs import DDGS
 from ddgs.exceptions import DDGSException
 from dotenv import load_dotenv

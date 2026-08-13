@@ -1,0 +1,13 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Correctness-focused: unused imports/names, undefined names, syntax issues,
+# pycodestyle warnings. Deliberately not pulling in modernization (UP) or
+# comprehension/pie style rules (C4/PIE) -- this is a lint gate for the new
+# CI workflow, not a mandate to reformat the existing codebase's style.
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # long lines are common in this codebase's prompt/docstring blocks
+]
