@@ -25,6 +25,7 @@ import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
@@ -33,6 +34,7 @@ import mine_directories as miner
 import rank_engine as rnk
 import rank_schema as rc
 import scraper as scr
+import tracing
 import validate as val
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -53,25 +55,35 @@ def run_pipeline(
     max_per_query: int = 8, delay: float = 1.0, top_n: int = 10, min_score: int = 40,
     localize: bool = True, mine_dirs: bool = False, validate: bool = True,
     use_map_lookup: bool = True, min_candidates: int = 15, max_expansion_rounds: int = 2,
+    on_progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
+    """on_progress, if given, is called with the same per-item status
+    strings that get printed to stdout -- lets a caller (e.g. api.py's job
+    tracker, or app.py's own Streamlit orchestration) mirror progress
+    without scraping stdout. Each phase is also wrapped in a
+    tracing.span(), which emits a structured JSON start/end record to
+    stderr regardless of on_progress -- see src/tracing.py."""
     slug = f"{slugify(product)}_{slugify(country)}"
     DATA_DIR.mkdir(exist_ok=True)
     config = rnk.PROVIDER_CONFIGS[provider]
     model = model or config["default_model"]
 
     print(f"\n=== Phase 1: Discovery ({product} / {country}) ===")
-    candidates = disc.discover(
-        product, country, max_results_per_query=max_per_query,
-        delay_seconds=delay, localize=localize, localize_provider=provider,
-        min_candidates=min_candidates, max_expansion_rounds=max_expansion_rounds,
-    )
+    with tracing.span("discovery", product=product, country=country):
+        candidates = disc.discover(
+            product, country, max_results_per_query=max_per_query,
+            delay_seconds=delay, localize=localize, localize_provider=provider,
+            min_candidates=min_candidates, max_expansion_rounds=max_expansion_rounds,
+            on_progress=on_progress,
+        )
     candidates_dicts = [asdict(c) for c in candidates]
     candidates_path = DATA_DIR / f"candidates_{slug}.json"
     save_json(candidates_path, candidates_dicts)
     print(f"Found {len(candidates_dicts)} candidates -> {candidates_path}")
 
     print("\n=== Phase 2: Scraping ===")
-    scraped = scr.scrape_all(candidates_dicts, delay_seconds=delay)
+    with tracing.span("scrape", candidate_count=len(candidates_dicts)):
+        scraped = scr.scrape_all(candidates_dicts, delay_seconds=delay, on_progress=on_progress)
     scraped_dicts = [asdict(p) for p in scraped]
     scraped_path = DATA_DIR / f"scraped_{slug}.json"
     save_json(scraped_path, scraped_dicts)
@@ -79,20 +91,24 @@ def run_pipeline(
 
     if mine_dirs:
         print("\n=== Phase 3: Directory & Report Mining ===")
-        merged_candidates = miner.mine_leads(
-            candidates_dicts, scraped_dicts, product, country,
-            max_results_per_query=3, delay_seconds=delay, provider=provider,
-        )
-        # Only scrape the new tail -- merged_candidates is candidates_dicts
-        # with new leads appended, so re-scraping the whole thing would
-        # waste time and provider quota re-fetching pages we already have.
-        new_candidates_only = merged_candidates[len(candidates_dicts):]
-        if new_candidates_only:
-            newly_scraped = scr.scrape_all(new_candidates_only, delay_seconds=delay)
-            scraped_dicts = scraped_dicts + [asdict(p) for p in newly_scraped]
-            candidates_dicts = merged_candidates
-            save_json(candidates_path, candidates_dicts)
-            save_json(scraped_path, scraped_dicts)
+        with tracing.span("mine_directories"):
+            merged_candidates = miner.mine_leads(
+                candidates_dicts, scraped_dicts, product, country,
+                max_results_per_query=3, delay_seconds=delay, provider=provider,
+                on_progress=on_progress,
+            )
+            # Only scrape the new tail -- merged_candidates is candidates_dicts
+            # with new leads appended, so re-scraping the whole thing would
+            # waste time and provider quota re-fetching pages we already have.
+            new_candidates_only = merged_candidates[len(candidates_dicts):]
+            if new_candidates_only:
+                newly_scraped = scr.scrape_all(
+                    new_candidates_only, delay_seconds=delay, on_progress=on_progress,
+                )
+                scraped_dicts = scraped_dicts + [asdict(p) for p in newly_scraped]
+                candidates_dicts = merged_candidates
+                save_json(candidates_path, candidates_dicts)
+                save_json(scraped_path, scraped_dicts)
         print(f"Added {len(new_candidates_only)} new leads -> {candidates_path}, {scraped_path}")
 
     api_keys = rnk.parse_api_keys(api_key)
@@ -100,21 +116,24 @@ def run_pipeline(
           f"{f', {len(api_keys)} API keys for rotation' if len(api_keys) > 1 else ''}) ===")
     judge_fn, next_judge_fn = rnk.build_key_rotator(provider, model, api_keys)
     results_path = DATA_DIR / f"results_{slug}.json"
-    ranked = rc.rank_companies(
-        scraped_dicts, product=product, country=country, judge_fn=judge_fn,
-        top_n=top_n, min_score=min_score, delay_seconds=delay,
-        checkpoint_path=results_path,  # saved after every qualifying result, not just at the end
-        next_judge_fn=next_judge_fn,
-    )
+    with tracing.span("ranking", provider=provider, model=model, page_count=len(scraped_dicts)):
+        ranked = rc.rank_companies(
+            scraped_dicts, product=product, country=country, judge_fn=judge_fn,
+            top_n=top_n, min_score=min_score, delay_seconds=delay,
+            checkpoint_path=results_path,  # saved after every qualifying result, not just at the end
+            next_judge_fn=next_judge_fn, on_progress=on_progress,
+        )
     rc.save_ranked(ranked, results_path)
     ranked_dicts = [c.model_dump() for c in ranked]
     print(f"Ranked {len(ranked_dicts)} genuine importer(s) -> {results_path}")
 
     if validate:
         print("\n=== Phase 5: Validation ===")
-        validated = val.validate_all(
-            ranked_dicts, scraped_dicts, country, use_map_lookup=use_map_lookup,
-        )
+        with tracing.span("validation", country=country, candidate_count=len(ranked_dicts)):
+            validated = val.validate_all(
+                ranked_dicts, scraped_dicts, country, use_map_lookup=use_map_lookup,
+                on_progress=on_progress,
+            )
         validated_path = DATA_DIR / f"validated_{slug}.json"
         save_json(validated_path, validated)
         print(f"Validated {len(validated)} companies -> {validated_path}")
