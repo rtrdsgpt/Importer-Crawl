@@ -11,4 +11,4 @@ python-dotenv>=1.2.2
 streamlit>=1.38
 fastapi>=0.115
 uvicorn[standard]>=0.30
-mcp>=1.2
+mcp>=2.0.0
